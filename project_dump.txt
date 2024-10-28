@@ -1,0 +1,6255 @@
+=========================================
+File: ./cert/server.crt
+=========================================
+
+
+
+=========================================
+File: ./cert/server.key
+=========================================
+
+
+
+=========================================
+File: ./cmd/proxy-service/main.go
+=========================================
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"runtime"
+	"syscall"
+	"time"
+
+	"proxy-service/internal/app"
+	"proxy-service/internal/config"
+	"proxy-service/pkg/logger"
+)
+
+func main() {
+	// Initialize logger
+	log := logger.NewLogger()
+	defer log.Sync() // Ensure all logs are flushed
+
+	// Log startup information
+	log.Info("starting proxy service",
+		"version", getVersion(),
+		"go_version", runtime.Version(),
+		"gomaxprocs", runtime.GOMAXPROCS(0),
+	)
+
+	// Load configuration
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Error("failed to load config",
+			"error", err,
+			"path", os.Getenv("CONFIG_PATH"),
+		)
+		os.Exit(1)
+	}
+
+	// Validate configuration
+	if err := cfg.Validate(); err != nil {
+		log.Error("invalid configuration",
+			"error", err,
+		)
+		os.Exit(1)
+	}
+
+	// Create application
+	application, err := app.NewApp(cfg)
+	if err != nil {
+		log.Error("failed to create application",
+			"error", err,
+		)
+		os.Exit(1)
+	}
+
+	// Handle graceful shutdown
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+
+	// Create error channel for application errors
+	errChan := make(chan error, 1)
+
+	// Start application
+	go func() {
+		log.Info("starting application server",
+			"port", cfg.Server.Port,
+			"env", os.Getenv("APP_ENV"),
+		)
+
+		if err := application.Start(); err != nil {
+			log.Error("failed to start application",
+				"error", err,
+			)
+			errChan <- err
+		}
+	}()
+
+	// Wait for interrupt signal or error
+	select {
+	case sig := <-quit:
+		log.Info("received shutdown signal",
+			"signal", sig.String(),
+		)
+	case err := <-errChan:
+		log.Error("application error occurred",
+			"error", err,
+		)
+	}
+
+	// Initiate graceful shutdown
+	log.Info("initiating graceful shutdown")
+
+	// Create shutdown context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Attempt graceful shutdown
+	shutdownChan := make(chan struct{})
+	go func() {
+		defer close(shutdownChan)
+		if err := application.Stop(ctx); err != nil {
+			log.Error("error during shutdown",
+				"error", err,
+			)
+		}
+	}()
+
+	// Wait for shutdown or timeout
+	select {
+	case <-ctx.Done():
+		log.Error("shutdown timeout exceeded",
+			"timeout", "30s",
+		)
+	case <-shutdownChan:
+		log.Info("server shutdown completed successfully")
+	}
+
+	// Final cleanup
+	log.Info("server exited",
+		"uptime", getUptime(),
+	)
+}
+
+// Version information
+var (
+	version   = "dev"
+	buildTime = "unknown"
+)
+
+func getVersion() string {
+	return fmt.Sprintf("%s (built at %s)", version, buildTime)
+}
+
+// Track application uptime
+var startTime = time.Now()
+
+func getUptime() string {
+	return time.Since(startTime).Round(time.Second).String()
+}
+
+
+
+=========================================
+File: ./config/config.development.yaml
+=========================================
+server:
+  port: "8080"
+  tls_cert_file: "cert/server.crt"
+  tls_key_file: "cert/server.key"
+  read_timeout: 30
+  write_timeout: 30
+  idle_timeout: 60
+
+mongodb:
+  uri: "mongodb://localhost:27017"
+  database: "proxy_service"
+  pool_size: 50
+  timeout: 30
+
+redis:
+  address: "localhost:6379"
+  password: ""
+  db: 0
+  pool_size: 50
+  min_idle_conns: 10
+  max_retries: 3
+
+jwt:
+  secret: "development-secret-key"
+  expiry_minutes: 60
+
+metrics:
+  enabled: true
+  port: "9090"
+  path: "/metrics"
+
+log:
+  level: "debug"
+  format: "console"
+  output: "stdout"
+
+proxy:
+  target_host: "localhost:8080"
+
+cloudflare:
+  tunnel_id: "your-development-tunnel-id"
+  tunnel_token: "your-development-tunnel-token"
+  heartbeat_interval: "30s"
+  retry_interval: "5s"
+  max_retries: 3
+  connection_timeout: "30s"
+  handshake_timeout: "10s"
+
+agent:
+  max_connections: 1000
+  connection_timeout: "30s"
+  heartbeat_interval: "30s"
+  max_request_timeout: "60s"
+  max_retries: 3
+  retry_interval: "5s"
+  buffer_size: 4096
+  agent:
+  security: "your-security-token"
+  max_request_size: 1048576 # 1MB
+
+
+
+
+=========================================
+File: ./config/config.production.yaml
+=========================================
+server:
+  port: "8080"
+  tls_cert_file: "/app/cert/server.crt"
+  tls_key_file: "/app/cert/server.key"
+  read_timeout: 30
+  write_timeout: 30
+  idle_timeout: 60
+
+mongodb:
+  uri: "${MONGODB_URI}"
+  database: "proxy_service"
+  pool_size: 100
+  timeout: 30
+
+redis:
+  address: "${REDIS_ADDRESS}"
+  password: "${REDIS_PASSWORD}"
+  db: 0
+  pool_size: 100
+  min_idle_conns: 20
+  max_retries: 5
+
+jwt:
+  secret: "${JWT_SECRET}"
+  expiry_minutes: 60
+
+metrics:
+  enabled: true
+  port: "9090"
+  path: "/metrics"
+
+log:
+  level: "info"
+  format: "json"
+  output: "stdout"
+
+proxy:
+  target_host: "localhost:8080"
+
+cloudflare:
+  tunnel_id: "${CLOUDFLARE_TUNNEL_ID}"
+  tunnel_token: "${CLOUDFLARE_TUNNEL_TOKEN}"
+
+
+
+=========================================
+File: ./config/config.test.yaml
+=========================================
+# server:
+#   port: "8081"
+#   tls_cert_file: "cert/test.crt"
+#   tls_key_file: "cert/test.key"
+#   read_timeout: 30
+#   write_timeout: 30
+#   idle_timeout: 60
+
+# mongodb:
+#   uri: "mongodb://localhost:27017"
+#   database: "proxy_service_test"
+#   pool_size: 10
+#   timeout: 30
+
+# redis:
+#   address: "localhost:6379"
+#   password: ""
+#   db: 1
+#   pool_size: 10
+#   min_idle_conns: 5
+
+# jwt:
+#   secret: "test-secret-key"
+#   expiry_minutes: 60
+
+# metrics:
+#   enabled: false
+#   port: "9091"
+#   path: "/metrics"
+
+# log:
+#   level: "debug"
+#   format: "console"
+#   output: "stdout"
+
+
+
+=========================================
+File: ./deployment/docker/Dockerfile
+=========================================
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apk add --no-cache gcc musl-dev
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the application
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o proxy-service ./cmd/proxy-service
+
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app/
+
+# Copy binary from builder
+COPY --from=builder /app/proxy-service .
+COPY --from=builder /app/config/config.production.yaml ./config/config.yaml
+
+# Create necessary directories
+RUN mkdir -p /app/cert
+
+# Expose ports for the application and metrics
+EXPOSE 8080 9090
+
+CMD ["./proxy-service"]
+
+
+=========================================
+File: ./deployment/docker/Dockerfile.dev
+=========================================
+FROM golang:1.21
+
+WORKDIR /app
+
+# Install development tools
+RUN go install github.com/cosmtrek/air@latest
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Expose ports
+EXPOSE 8080 9090
+
+# Use air for hot reload in development
+CMD ["air", "-c", ".air.toml"]
+
+
+=========================================
+File: ./deployment/docker-compose.yaml
+=========================================
+version: '3.8'
+
+services:
+  proxy-service:
+    build:
+      context: ..
+      dockerfile: deployment/docker/Dockerfile
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017
+      - REDIS_ADDRESS=redis:6379
+      - JWT_SECRET=your-secret-key
+    depends_on:
+      - mongodb
+      - redis
+
+  mongodb:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./monitoring/grafana:/etc/grafana
+      - grafana_data:/var/lib/grafana
+
+volumes:
+  mongodb_data:
+  redis_data:
+  grafana_data:
+
+
+=========================================
+File: ./deployment/kubernetes/configmap.yaml
+=========================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy-service-config
+data:
+  config.yaml: |
+    server:
+      port: "8080"
+      read_timeout: 30
+      write_timeout: 30
+      idle_timeout: 60
+
+    metrics:
+      enabled: true
+      port: "9090"
+      path: "/metrics"
+
+    log:
+      level: "info"
+      format: "json"
+
+
+
+=========================================
+File: ./deployment/kubernetes/deployment.yaml
+=========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy-service
+  labels:
+    app: proxy-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: proxy-service
+  template:
+    metadata:
+      labels:
+        app: proxy-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      containers:
+        - name: proxy-service
+          image: proxy-service:latest
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 9090
+              name: metrics
+          env:
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: proxy-secrets
+                  key: mongodb-uri
+            - name: REDIS_ADDRESS
+              valueFrom:
+                secretKeyRef:
+                  name: proxy-secrets
+                  key: redis-address
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: proxy-secrets
+                  key: jwt-secret
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+            - name: certs
+              mountPath: /app/cert
+          resources:
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: proxy-service-config
+        - name: certs
+          secret:
+            secretName: proxy-service-certs
+
+
+
+=========================================
+File: ./deployment/kubernetes/secret.yaml
+=========================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: proxy-secrets
+type: Opaque
+data:
+  mongodb-uri: base64encodeduri
+  redis-address: base64encodedaddress
+  jwt-secret: base64encodedsecret
+  tls.crt: base64encodedcert
+  tls.key: base64encodedkey
+
+
+
+=========================================
+File: ./deployment/kubernetes/service.yaml
+=========================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy-service
+  labels:
+    app: proxy-service
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 443
+      targetPort: 8080
+      protocol: TCP
+      name: https
+    - port: 9090
+      targetPort: 9090
+      protocol: TCP
+      name: metrics
+  selector:
+    app: proxy-service
+
+
+
+=========================================
+File: ./deployment/monitoring/grafana/dashboards/proxy.json
+=========================================
+{
+    "annotations": {
+        "list": []
+    },
+    "title": "Proxy Service Metrics",
+    "description": "Dashboard for monitoring proxy service performance",
+    "panels": [
+        {
+            "title": "Request Rate",
+            "type": "graph",
+            "datasource": "Prometheus",
+            "targets": [
+                {
+                    "expr": "rate(proxy_requests_total[5m])",
+                    "legendFormat": "{{customer_id}} - {{path}}"
+                }
+            ]
+        },
+        {
+            "title": "Response Latency",
+            "type": "graph",
+            "datasource": "Prometheus",
+            "targets": [
+                {
+                    "expr": "rate(proxy_request_duration_seconds_sum[5m]) / rate(proxy_request_duration_seconds_count[5m])",
+                    "legendFormat": "{{customer_id}} - {{path}}"
+                }
+            ]
+        },
+        {
+            "title": "Error Rate",
+            "type": "graph",
+            "datasource": "Prometheus",
+            "targets": [
+                {
+                    "expr": "rate(proxy_errors_total[5m])",
+                    "legendFormat": "{{customer_id}} - {{type}}"
+                }
+            ]
+        }
+    ]
+}
+
+
+=========================================
+File: ./deployment/monitoring/grafana/dashboards/system.json
+=========================================
+{
+    "annotations": {
+        "list": []
+    },
+    "title": "System Metrics",
+    "description": "Dashboard for monitoring system resources",
+    "panels": [
+        {
+            "title": "CPU Usage",
+            "type": "graph",
+            "datasource": "Prometheus",
+            "targets": [
+                {
+                    "expr": "rate(process_cpu_seconds_total[5m])",
+                    "legendFormat": "CPU Usage"
+                }
+            ]
+        },
+        {
+            "title": "Memory Usage",
+            "type": "graph",
+            "datasource": "Prometheus",
+            "targets": [
+                {
+                    "expr": "process_resident_memory_bytes",
+                    "legendFormat": "Memory Usage"
+                }
+            ]
+        },
+        {
+            "title": "Goroutines",
+            "type": "graph",
+            "datasource": "Prometheus",
+            "targets": [
+                {
+                    "expr": "go_goroutines",
+                    "legendFormat": "Active Goroutines"
+                }
+            ]
+        }
+    ]
+}
+
+
+=========================================
+File: ./deployment/monitoring/prometheus/prometheus.yml
+=========================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "proxy-service"
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels:
+          [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: kubernetes_namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: kubernetes_pod_name
+
+  - job_name: "kubernetes-cadvisor"
+    kubernetes_sd_configs:
+      - role: node
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - target_label: __address__
+        replacement: kubernetes.default.svc:443
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+  - job_name: "agent-metrics"
+    static_configs:
+      - targets: ["proxy-agent:9090"]
+    metrics_path: "/metrics"
+    scrape_interval: 15s
+
+
+
+=========================================
+File: ./docker-compose.yml
+=========================================
+# docker-compose.yaml
+version: '3.8'
+
+services:
+  proxy-service:
+    build:
+      context: .
+      dockerfile: deployment/docker/Dockerfile.dev
+    container_name: proxy-service
+    ports:
+      - "8080:8080"  # Application port
+      - "9090:9090"  # Metrics port
+    volumes:
+      - .:/app
+      - go-mod-cache:/go/pkg/mod
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017
+      - REDIS_ADDRESS=redis:6379
+      - JWT_SECRET=local-development-secret
+      - LOG_LEVEL=debug
+      - ENVIRONMENT=development
+    networks:
+      - proxy-network
+    depends_on:
+      - mongodb
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  mongodb:
+    image: mongo:latest
+    container_name: proxy-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./scripts/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    environment:
+      - MONGO_INITDB_DATABASE=proxy_service
+    networks:
+      - proxy-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  redis:
+    image: redis:latest
+    container_name: proxy-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    networks:
+      - proxy-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: proxy-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deployment/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - proxy-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: proxy-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./deployment/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./deployment/monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    networks:
+      - proxy-network
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  mongodb_data:
+    name: proxy-mongodb-data
+  redis_data:
+    name: proxy-redis-data
+  prometheus_data:
+    name: proxy-prometheus-data
+  grafana_data:
+    name: proxy-grafana-data
+  go-mod-cache:
+    name: proxy-go-mod-cache
+
+networks:
+  proxy-network:
+    name: proxy-network
+    driver: bridge
+
+
+=========================================
+File: ./docs/api.md
+=========================================
+
+
+
+=========================================
+File: ./docs/deployment.md
+=========================================
+
+
+
+=========================================
+File: ./docs/monitoring.md
+=========================================
+
+
+
+=========================================
+File: ./generate_dump_text.sh
+=========================================
+#!/bin/bash
+
+# Output file
+OUTPUT_FILE="project_dump.txt"
+
+# Clear the output file if it already exists
+> "$OUTPUT_FILE"
+
+# Function to recursively write the content of all files
+write_files_to_output() {
+  local DIR="$1"
+
+  # Loop through all files and directories
+  for FILE in "$DIR"/*; do
+    if [ -d "$FILE" ]; then
+      # If it's a directory, recurse into it
+      write_files_to_output "$FILE"
+    elif [ -f "$FILE" ]; then
+      # Write the file header and content to the output file
+      echo "=========================================" >> "$OUTPUT_FILE"
+      echo "File: $FILE" >> "$OUTPUT_FILE"
+      echo "=========================================" >> "$OUTPUT_FILE"
+      cat "$FILE" >> "$OUTPUT_FILE"
+      echo -e "\n\n" >> "$OUTPUT_FILE"
+    fi
+  done
+}
+
+# Start writing from the current directory
+write_files_to_output "."
+
+echo "Project dump created successfully in $OUTPUT_FILE"
+
+
+
+=========================================
+File: ./go.mod
+=========================================
+module proxy-service
+
+go 1.23.2
+
+require (
+	github.com/gin-gonic/gin v1.10.0
+	github.com/golang-jwt/jwt/v5 v5.2.1
+	github.com/gorilla/websocket v1.5.3
+	github.com/prometheus/client_golang v1.20.5
+	github.com/redis/go-redis/v9 v9.7.0
+	github.com/spf13/viper v1.19.0
+	go.mongodb.org/mongo-driver v1.17.1
+	go.uber.org/zap v1.27.0
+)
+
+require (
+	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/bytedance/sonic v1.11.6 // indirect
+	github.com/bytedance/sonic/loader v0.1.1 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/cloudwego/base64x v0.1.4 // indirect
+	github.com/cloudwego/iasm v0.2.0 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/fsnotify/fsnotify v1.7.0 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
+	github.com/gin-contrib/sse v0.1.0 // indirect
+	github.com/go-playground/locales v0.14.1 // indirect
+	github.com/go-playground/universal-translator v0.18.1 // indirect
+	github.com/go-playground/validator/v10 v10.20.0 // indirect
+	github.com/goccy/go-json v0.10.2 // indirect
+	github.com/golang/snappy v0.0.4 // indirect
+	github.com/hashicorp/hcl v1.0.0 // indirect
+	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/klauspost/compress v1.17.9 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.7 // indirect
+	github.com/leodido/go-urn v1.4.0 // indirect
+	github.com/magiconair/properties v1.8.7 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mitchellh/mapstructure v1.5.0 // indirect
+	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
+	github.com/modern-go/reflect2 v1.0.2 // indirect
+	github.com/montanaflynn/stats v0.7.1 // indirect
+	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/pelletier/go-toml/v2 v2.2.2 // indirect
+	github.com/prometheus/client_model v0.6.1 // indirect
+	github.com/prometheus/common v0.55.0 // indirect
+	github.com/prometheus/procfs v0.15.1 // indirect
+	github.com/sagikazarmark/locafero v0.4.0 // indirect
+	github.com/sagikazarmark/slog-shim v0.1.0 // indirect
+	github.com/sourcegraph/conc v0.3.0 // indirect
+	github.com/spf13/afero v1.11.0 // indirect
+	github.com/spf13/cast v1.6.0 // indirect
+	github.com/spf13/pflag v1.0.5 // indirect
+	github.com/subosito/gotenv v1.6.0 // indirect
+	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
+	github.com/ugorji/go/codec v1.2.12 // indirect
+	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
+	github.com/xdg-go/scram v1.1.2 // indirect
+	github.com/xdg-go/stringprep v1.0.4 // indirect
+	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
+	go.uber.org/multierr v1.10.0 // indirect
+	golang.org/x/arch v0.8.0 // indirect
+	golang.org/x/crypto v0.26.0 // indirect
+	golang.org/x/exp v0.0.0-20230905200255-921286631fa9 // indirect
+	golang.org/x/net v0.26.0 // indirect
+	golang.org/x/sync v0.8.0 // indirect
+	golang.org/x/sys v0.23.0 // indirect
+	golang.org/x/text v0.17.0 // indirect
+	google.golang.org/protobuf v1.34.2 // indirect
+	gopkg.in/ini.v1 v1.67.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
+
+
+
+=========================================
+File: ./go.sum
+=========================================
+github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
+github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
+github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
+github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
+github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=
+github.com/bsm/gomega v1.27.10/go.mod h1:JyEr/xRbxbtgWNi8tIEVPUYZ5Dzef52k01W3YH0H+O0=
+github.com/bytedance/sonic v1.11.6 h1:oUp34TzMlL+OY1OUWxHqsdkgC/Zfc85zGqw9siXjrc0=
+github.com/bytedance/sonic v1.11.6/go.mod h1:LysEHSvpvDySVdC2f87zGWf6CIKJcAvqab1ZaiQtds4=
+github.com/bytedance/sonic/loader v0.1.1 h1:c+e5Pt1k/cy5wMveRDyk2X4B9hF4g7an8N3zCYjJFNM=
+github.com/bytedance/sonic/loader v0.1.1/go.mod h1:ncP89zfokxS5LZrJxl5z0UJcsk4M4yY2JpfqGeCtNLU=
+github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
+github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
+github.com/cloudwego/base64x v0.1.4 h1:jwCgWpFanWmN8xoIUHa2rtzmkd5J2plF/dnLS6Xd/0Y=
+github.com/cloudwego/base64x v0.1.4/go.mod h1:0zlkT4Wn5C6NdauXdJRhSKRlJvmclQ1hhJgA0rcu/8w=
+github.com/cloudwego/iasm v0.2.0 h1:1KNIy1I1H9hNNFEEH3DVnI4UujN+1zjpuk6gwHLTssg=
+github.com/cloudwego/iasm v0.2.0/go.mod h1:8rXZaNYT2n95jn+zTI1sDr+IgcD2GVs0nlbbQPiEFhY=
+github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
+github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f h1:lO4WD4F/rVNCu3HqELle0jiPLLBs70cWOduZpkS1E78=
+github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f/go.mod h1:cuUVRXasLTGF7a8hSLbxyZXjz+1KgoB3wDUb6vlszIc=
+github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=
+github.com/frankban/quicktest v1.14.6/go.mod h1:4ptaffx2x8+WTWXmUCuVU6aPUX1/Mz7zb5vbUoiM6w0=
+github.com/fsnotify/fsnotify v1.7.0 h1:8JEhPFa5W2WU7YfeZzPNqzMP6Lwt7L2715Ggo0nosvA=
+github.com/fsnotify/fsnotify v1.7.0/go.mod h1:40Bi/Hjc2AVfZrqy+aj+yEI+/bRxZnMJyTJwOpGvigM=
+github.com/gabriel-vasile/mimetype v1.4.3 h1:in2uUcidCuFcDKtdcBxlR0rJ1+fsokWf+uqxgUFjbI0=
+github.com/gabriel-vasile/mimetype v1.4.3/go.mod h1:d8uq/6HKRL6CGdk+aubisF/M5GcPfT7nKyLpA0lbSSk=
+github.com/gin-contrib/sse v0.1.0 h1:Y/yl/+YNO8GZSjAhjMsSuLt29uWRFHdHYUb5lYOV9qE=
+github.com/gin-contrib/sse v0.1.0/go.mod h1:RHrZQHXnP2xjPF+u1gW/2HnVO7nvIa9PG3Gm+fLHvGI=
+github.com/gin-gonic/gin v1.10.0 h1:nTuyha1TYqgedzytsKYqna+DfLos46nTv2ygFy86HFU=
+github.com/gin-gonic/gin v1.10.0/go.mod h1:4PMNQiOhvDRa013RKVbsiNwoyezlm2rm0uX/T7kzp5Y=
+github.com/go-playground/assert/v2 v2.2.0 h1:JvknZsQTYeFEAhQwI4qEt9cyV5ONwRHC+lYKSsYSR8s=
+github.com/go-playground/assert/v2 v2.2.0/go.mod h1:VDjEfimB/XKnb+ZQfWdccd7VUvScMdVu0Titje2rxJ4=
+github.com/go-playground/locales v0.14.1 h1:EWaQ/wswjilfKLTECiXz7Rh+3BjFhfDFKv/oXslEjJA=
+github.com/go-playground/locales v0.14.1/go.mod h1:hxrqLVvrK65+Rwrd5Fc6F2O76J/NuW9t0sjnWqG1slY=
+github.com/go-playground/universal-translator v0.18.1 h1:Bcnm0ZwsGyWbCzImXv+pAJnYK9S473LQFuzCbDbfSFY=
+github.com/go-playground/universal-translator v0.18.1/go.mod h1:xekY+UJKNuX9WP91TpwSH2VMlDf28Uj24BCp08ZFTUY=
+github.com/go-playground/validator/v10 v10.20.0 h1:K9ISHbSaI0lyB2eWMPJo+kOS/FBExVwjEviJTixqxL8=
+github.com/go-playground/validator/v10 v10.20.0/go.mod h1:dbuPbCMFw/DrkbEynArYaCwl3amGuJotoKCe95atGMM=
+github.com/goccy/go-json v0.10.2 h1:CrxCmQqYDkv1z7lO7Wbh2HN93uovUHgrECaO5ZrCXAU=
+github.com/goccy/go-json v0.10.2/go.mod h1:6MelG93GURQebXPDq3khkgXZkazVtN9CRI+MGFi0w8I=
+github.com/golang-jwt/jwt/v5 v5.2.1 h1:OuVbFODueb089Lh128TAcimifWaLhJwVflnrgM17wHk=
+github.com/golang-jwt/jwt/v5 v5.2.1/go.mod h1:pqrtFR0X4osieyHYxtmOUWsAWrfe1Q5UVIyoH402zdk=
+github.com/golang/snappy v0.0.4 h1:yAGX7huGHXlcLOEtBnF4w7FQwA26wojNCwOYAEhLjQM=
+github.com/golang/snappy v0.0.4/go.mod h1:/XxbfmMg8lxefKM7IXC3fBNl/7bRcc72aCRzEWrmP2Q=
+github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
+github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
+github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
+github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
+github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
+github.com/hashicorp/hcl v1.0.0 h1:0Anlzjpi4vEasTeNFn2mLJgTSwt0+6sfsiTG8qcWGx4=
+github.com/hashicorp/hcl v1.0.0/go.mod h1:E5yfLk+7swimpb2L/Alb/PJmXilQ/rhwaUYs4T20WEQ=
+github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
+github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
+github.com/klauspost/compress v1.17.9 h1:6KIumPrER1LHsvBVuDa0r5xaG0Es51mhhB9BQB2qeMA=
+github.com/klauspost/compress v1.17.9/go.mod h1:Di0epgTjJY877eYKx5yC51cX2A2Vl2ibi7bDH9ttBbw=
+github.com/klauspost/cpuid/v2 v2.0.9/go.mod h1:FInQzS24/EEf25PyTYn52gqo7WaD8xa0213Md/qVLRg=
+github.com/klauspost/cpuid/v2 v2.2.7 h1:ZWSB3igEs+d0qvnxR/ZBzXVmxkgt8DdzP6m9pfuVLDM=
+github.com/klauspost/cpuid/v2 v2.2.7/go.mod h1:Lcz8mBdAVJIBVzewtcLocK12l3Y+JytZYpaMropDUws=
+github.com/knz/go-libedit v1.10.1/go.mod h1:MZTVkCWyz0oBc7JOWP3wNAzd002ZbM/5hgShxwh4x8M=
+github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
+github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
+github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
+github.com/kr/text v0.2.0/go.mod h1:eLer722TekiGuMkidMxC/pM04lWEeraHUUmBw8l2grE=
+github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0SNc=
+github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
+github.com/leodido/go-urn v1.4.0 h1:WT9HwE9SGECu3lg4d/dIA+jxlljEa1/ffXKmRjqdmIQ=
+github.com/leodido/go-urn v1.4.0/go.mod h1:bvxc+MVxLKB4z00jd1z+Dvzr47oO32F/QSNjSBOlFxI=
+github.com/magiconair/properties v1.8.7 h1:IeQXZAiQcpL9mgcAe1Nu6cX9LLw6ExEHKjN0VQdvPDY=
+github.com/magiconair/properties v1.8.7/go.mod h1:Dhd985XPs7jluiymwWYZ0G4Z61jb3vdS329zhj2hYo0=
+github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
+github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
+github.com/mitchellh/mapstructure v1.5.0 h1:jeMsZIYE/09sWLaz43PL7Gy6RuMjD2eJVyuac5Z2hdY=
+github.com/mitchellh/mapstructure v1.5.0/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=
+github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
+github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd h1:TRLaZ9cD/w8PVh93nsPXa1VrQ6jlwL5oN8l14QlcNfg=
+github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
+github.com/modern-go/reflect2 v1.0.2 h1:xBagoLtFs94CBntxluKeaWgTMpvLxC4ur3nMaC9Gz0M=
+github.com/modern-go/reflect2 v1.0.2/go.mod h1:yWuevngMOJpCy52FWWMvUC8ws7m/LJsjYzDa0/r8luk=
+github.com/montanaflynn/stats v0.7.1 h1:etflOAAHORrCC44V+aR6Ftzort912ZU+YLiSTuV8eaE=
+github.com/montanaflynn/stats v0.7.1/go.mod h1:etXPPgVO6n31NxCd9KQUMvCM+ve0ruNzt6R8Bnaayow=
+github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
+github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
+github.com/pelletier/go-toml/v2 v2.2.2 h1:aYUidT7k73Pcl9nb2gScu7NSrKCSHIDE89b3+6Wq+LM=
+github.com/pelletier/go-toml/v2 v2.2.2/go.mod h1:1t835xjRzz80PqgE6HHgN2JOsmgYu/h4qDAS4n929Rs=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRIccs7FGNTlIRMkT8wgtp5eCXdBlqhYGL6U=
+github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/prometheus/client_golang v1.20.5 h1:cxppBPuYhUnsO6yo/aoRol4L7q7UFfdm+bR9r+8l63Y=
+github.com/prometheus/client_golang v1.20.5/go.mod h1:PIEt8X02hGcP8JWbeHyeZ53Y/jReSnHgO035n//V5WE=
+github.com/prometheus/client_model v0.6.1 h1:ZKSh/rekM+n3CeS952MLRAdFwIKqeY8b62p8ais2e9E=
+github.com/prometheus/client_model v0.6.1/go.mod h1:OrxVMOVHjw3lKMa8+x6HeMGkHMQyHDk9E3jmP2AmGiY=
+github.com/prometheus/common v0.55.0 h1:KEi6DK7lXW/m7Ig5i47x0vRzuBsHuvJdi5ee6Y3G1dc=
+github.com/prometheus/common v0.55.0/go.mod h1:2SECS4xJG1kd8XF9IcM1gMX6510RAEL65zxzNImwdc8=
+github.com/prometheus/procfs v0.15.1 h1:YagwOFzUgYfKKHX6Dr+sHT7km/hxC76UB0learggepc=
+github.com/prometheus/procfs v0.15.1/go.mod h1:fB45yRUv8NstnjriLhBQLuOUt+WW4BsoGhij/e3PBqk=
+github.com/redis/go-redis/v9 v9.7.0 h1:HhLSs+B6O021gwzl+locl0zEDnyNkxMtf/Z3NNBMa9E=
+github.com/redis/go-redis/v9 v9.7.0/go.mod h1:f6zhXITC7JUJIlPEiBOTXxJgPLdZcA93GewI7inzyWw=
+github.com/rogpeppe/go-internal v1.10.0 h1:TMyTOH3F/DB16zRVcYyreMH6GnZZrwQVAoYjRBZyWFQ=
+github.com/rogpeppe/go-internal v1.10.0/go.mod h1:UQnix2H7Ngw/k4C5ijL5+65zddjncjaFoBhdsK/akog=
+github.com/sagikazarmark/locafero v0.4.0 h1:HApY1R9zGo4DBgr7dqsTH/JJxLTTsOt7u6keLGt6kNQ=
+github.com/sagikazarmark/locafero v0.4.0/go.mod h1:Pe1W6UlPYUk/+wc/6KFhbORCfqzgYEpgQ3O5fPuL3H4=
+github.com/sagikazarmark/slog-shim v0.1.0 h1:diDBnUNK9N/354PgrxMywXnAwEr1QZcOr6gto+ugjYE=
+github.com/sagikazarmark/slog-shim v0.1.0/go.mod h1:SrcSrq8aKtyuqEI1uvTDTK1arOWRIczQRv+GVI1AkeQ=
+github.com/sourcegraph/conc v0.3.0 h1:OQTbbt6P72L20UqAkXXuLOj79LfEanQ+YQFNpLA9ySo=
+github.com/sourcegraph/conc v0.3.0/go.mod h1:Sdozi7LEKbFPqYX2/J+iBAM6HpqSLTASQIKqDmF7Mt0=
+github.com/spf13/afero v1.11.0 h1:WJQKhtpdm3v2IzqG8VMqrr6Rf3UYpEF239Jy9wNepM8=
+github.com/spf13/afero v1.11.0/go.mod h1:GH9Y3pIexgf1MTIWtNGyogA5MwRIDXGUr+hbWNoBjkY=
+github.com/spf13/cast v1.6.0 h1:GEiTHELF+vaR5dhz3VqZfFSzZjYbgeKDpBxQVS4GYJ0=
+github.com/spf13/cast v1.6.0/go.mod h1:ancEpBxwJDODSW/UG4rDrAqiKolqNNh2DX3mk86cAdo=
+github.com/spf13/pflag v1.0.5 h1:iy+VFUOCP1a+8yFto/drg2CJ5u0yRoB7fZw3DKv/JXA=
+github.com/spf13/pflag v1.0.5/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
+github.com/spf13/viper v1.19.0 h1:RWq5SEjt8o25SROyN3z2OrDB9l7RPd3lwTWU8EcEdcI=
+github.com/spf13/viper v1.19.0/go.mod h1:GQUN9bilAbhU/jgc1bKs99f/suXKeUMct8Adx5+Ntkg=
+github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+github.com/stretchr/objx v0.4.0/go.mod h1:YvHI0jy2hoMjB+UWwv71VJQ9isScKT/TqJzVSSt89Yw=
+github.com/stretchr/objx v0.5.0/go.mod h1:Yh+to48EsGEfYuaHDzXPcE3xhTkx73EhmCGUpEOglKo=
+github.com/stretchr/objx v0.5.2/go.mod h1:FRsXN1f5AsAjCGJKqEizvkpNtU+EGNCLh3NxZ/8L+MA=
+github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
+github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.7.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.8.0/go.mod h1:yNjHg4UonilssWZ8iaSj1OCr/vHnekPRkoO+kdMU+MU=
+github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
+github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
+github.com/stretchr/testify v1.9.0 h1:HtqpIVDClZ4nwg75+f6Lvsy/wHu+3BoSGCbBAcpTsTg=
+github.com/stretchr/testify v1.9.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
+github.com/subosito/gotenv v1.6.0 h1:9NlTDc1FTs4qu0DDq7AEtTPNw6SVm7uBMsUCUjABIf8=
+github.com/subosito/gotenv v1.6.0/go.mod h1:Dk4QP5c2W3ibzajGcXpNraDfq2IrhjMIvMSWPKKo0FU=
+github.com/twitchyliquid64/golang-asm v0.15.1 h1:SU5vSMR7hnwNxj24w34ZyCi/FmDZTkS4MhqMhdFk5YI=
+github.com/twitchyliquid64/golang-asm v0.15.1/go.mod h1:a1lVb/DtPvCB8fslRZhAngC2+aY1QWCk3Cedj/Gdt08=
+github.com/ugorji/go/codec v1.2.12 h1:9LC83zGrHhuUA9l16C9AHXAqEV/2wBQ4nkvumAE65EE=
+github.com/ugorji/go/codec v1.2.12/go.mod h1:UNopzCgEMSXjBc6AOMqYvWC1ktqTAfzJZUZgYf6w6lg=
+github.com/xdg-go/pbkdf2 v1.0.0 h1:Su7DPu48wXMwC3bs7MCNG+z4FhcyEuz5dlvchbq0B0c=
+github.com/xdg-go/pbkdf2 v1.0.0/go.mod h1:jrpuAogTd400dnrH08LKmI/xc1MbPOebTwRqcT5RDeI=
+github.com/xdg-go/scram v1.1.2 h1:FHX5I5B4i4hKRVRBCFRxq1iQRej7WO3hhBuJf+UUySY=
+github.com/xdg-go/scram v1.1.2/go.mod h1:RT/sEzTbU5y00aCK8UOx6R7YryM0iF1N2MOmC3kKLN4=
+github.com/xdg-go/stringprep v1.0.4 h1:XLI/Ng3O1Atzq0oBs3TWm+5ZVgkq2aqdlvP9JtoZ6c8=
+github.com/xdg-go/stringprep v1.0.4/go.mod h1:mPGuuIYwz7CmR2bT9j4GbQqutWS1zV24gijq1dTyGkM=
+github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 h1:ilQV1hzziu+LLM3zUTJ0trRztfwgjqKnBWNtSRkbmwM=
+github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78/go.mod h1:aL8wCCfTfSfmXjznFBSZNN13rSJjlIOI1fUNAtF7rmI=
+github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
+go.mongodb.org/mongo-driver v1.17.1 h1:Wic5cJIwJgSpBhe3lx3+/RybR5PiYRMpVFgO7cOHyIM=
+go.mongodb.org/mongo-driver v1.17.1/go.mod h1:wwWm/+BuOddhcq3n68LKRmgk2wXzmF6s0SFOa0GINL4=
+go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
+go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
+go.uber.org/multierr v1.10.0 h1:S0h4aNzvfcFsC3dRF1jLoaov7oRaKqRGC/pUEJ2yvPQ=
+go.uber.org/multierr v1.10.0/go.mod h1:20+QtiLqy0Nd6FdQB9TLXag12DsQkrbs3htMFfDN80Y=
+go.uber.org/zap v1.27.0 h1:aJMhYGrd5QSmlpLMr2MftRKl7t8J8PTZPA732ud/XR8=
+go.uber.org/zap v1.27.0/go.mod h1:GB2qFLM7cTU87MWRP2mPIjqfIDnGu+VIO4V/SdhGo2E=
+golang.org/x/arch v0.0.0-20210923205945-b76863e36670/go.mod h1:5om86z9Hs0C8fWVUuoMHwpExlXzs5Tkyp9hOrfG7pp8=
+golang.org/x/arch v0.8.0 h1:3wRIsP3pM4yUptoR96otTUOXI367OS0+c9eeRi9doIc=
+golang.org/x/arch v0.8.0/go.mod h1:FEVrYAQjsQXMVJ1nsMoVVXPZg6p2JE2mx8psSWTDQys=
+golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
+golang.org/x/crypto v0.0.0-20210921155107-089bfa567519/go.mod h1:GvvjBRRGRdwPK5ydBHafDWAxML/pGHZbMvKqRZ5+Abc=
+golang.org/x/crypto v0.26.0 h1:RrRspgV4mU+YwB4FYnuBoKsUapNIL5cohGAmSH3azsw=
+golang.org/x/crypto v0.26.0/go.mod h1:GY7jblb9wI+FOo5y8/S2oY4zWP07AkOJ4+jxCqdqn54=
+golang.org/x/exp v0.0.0-20230905200255-921286631fa9 h1:GoHiUyI/Tp2nVkLI2mCxVkOjsbSXD66ic0XW0js0R9g=
+golang.org/x/exp v0.0.0-20230905200255-921286631fa9/go.mod h1:S2oDrQGGwySpoQPVqRShND87VCbxmc6bL1Yd2oYrm6k=
+golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4/go.mod h1:jJ57K6gSWd91VN4djpZkiMVwK6gcyfeH4XE8wZrZaV4=
+golang.org/x/net v0.0.0-20190620200207-3b0461eec859/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
+golang.org/x/net v0.0.0-20210226172049-e18ecbb05110/go.mod h1:m0MpNAwzfU5UDzcl9v0D8zg8gWTRqZa9RBIspLL5mdg=
+golang.org/x/net v0.0.0-20220722155237-a158d28d115b/go.mod h1:XRhObCWvk6IyKnWLug+ECip1KBveYUHfp+8e9klMJ9c=
+golang.org/x/net v0.26.0 h1:soB7SVo0PWrY4vPW/+ay0jKDNScG2X9wFeYlXIvJsOQ=
+golang.org/x/net v0.26.0/go.mod h1:5YKkiSynbBIh3p6iOc/vibscux0x38BZDkn8sCUPxHE=
+golang.org/x/sync v0.0.0-20190423024810-112230192c58/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+golang.org/x/sync v0.0.0-20220722155255-886fb9371eb4/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+golang.org/x/sync v0.8.0 h1:3NFvSEYkUoMifnESzZl15y791HH1qU2xm6eCJU5ZPXQ=
+golang.org/x/sync v0.8.0/go.mod h1:Czt+wKu1gCyEFDUtn0jG5QVvpJ6rzVqr5aXyt9drQfk=
+golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+golang.org/x/sys v0.0.0-20201119102817-f84b799fce68/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+golang.org/x/sys v0.0.0-20210615035016-665e8c7367d1/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.5.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.6.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.23.0 h1:YfKFowiIMvtgl1UERQoTPPToxltDeZfbj4H7dVUCwmM=
+golang.org/x/sys v0.23.0/go.mod h1:/VUhepiaJMQUp4+oa/7Zr1D23ma6VTLIYjOOTFZPUcA=
+golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1/go.mod h1:bj7SfCRtBDWHUb9snDiAeCFNEtKQo2Wmx5Cou7ajbmo=
+golang.org/x/term v0.0.0-20210927222741-03fcf44c2211/go.mod h1:jbD1KX2456YbFQfuXm/mYQcufACuNUgVhRMnK/tPxf8=
+golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
+golang.org/x/text v0.3.3/go.mod h1:5Zoc/QRtKVWzQhOtBMvqHzDpF6irO9z98xDceosuGiQ=
+golang.org/x/text v0.3.7/go.mod h1:u+2+/6zg+i71rQMx5EYifcz6MCKuco9NR6JIITiCfzQ=
+golang.org/x/text v0.3.8/go.mod h1:E6s5w1FMmriuDzIBO73fBruAKo1PCIq6d2Q6DHfQ8WQ=
+golang.org/x/text v0.17.0 h1:XtiM5bkSOt+ewxlOE/aE/AKEHibwj/6gvWMl9Rsh0Qc=
+golang.org/x/text v0.17.0/go.mod h1:BuEKDfySbSR4drPmRPG/7iBdf8hvFMuRexcpahXilzY=
+golang.org/x/tools v0.0.0-20180917221912-90fa682c2a6e/go.mod h1:n7NCudcB/nEzxVGmLbDWY5pfWTLqBcC2KZ6jyYvM4mQ=
+golang.org/x/tools v0.0.0-20191119224855-298f0cb1881e/go.mod h1:b+2E5dAYhXwXZwtnZ6UAqBI28+e2cm9otk0dWdXHAEo=
+golang.org/x/tools v0.1.12/go.mod h1:hNGJHUnrk76NpqgfD5Aqm5Crs+Hm0VOH/i9J2+nxYbc=
+golang.org/x/xerrors v0.0.0-20190717185122-a985d3407aa7/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+google.golang.org/protobuf v1.34.2 h1:6xV6lTsCfpGD21XK49h7MhtcApnLqkfYgPcdHftf6hg=
+google.golang.org/protobuf v1.34.2/go.mod h1:qYOHts0dSfpeUzUFpOMr/WGzszTmLH+DiWniOlNbLDw=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c h1:Hei/4ADfdWqJk1ZMxUNpqntNwaWcugrBjAiHlqqRiVk=
+gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c/go.mod h1:JHkPIbrfpd72SG/EVd6muEfDQjcINNoR0C8j2r3qZ4Q=
+gopkg.in/ini.v1 v1.67.0 h1:Dgnx+6+nfE+IfzjUEISNeydPJh9AXNNsWbGP9KzCsOA=
+gopkg.in/ini.v1 v1.67.0/go.mod h1:pNLf8WUiyNEtQjuu5G5vTm06TEv9tsIgeAvK8hOrP4k=
+gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+nullprogram.com/x/optparse v1.0.0/go.mod h1:KdyPE+Igbe0jQUrVfMqDMeJQIJZEuyV7pjYmp6pbG50=
+rsc.io/pdf v0.1.1/go.mod h1:n8OzWcQ6Sp37PL01nO98y4iUCRdTGarVfzxY20ICaU4=
+
+
+
+=========================================
+File: ./internal/app/app.go
+=========================================
+package app
+
+import (
+	"context"
+	"proxy-service/internal/config"
+	"proxy-service/internal/handler"
+	"proxy-service/internal/service"
+	"proxy-service/pkg/cache"
+	"proxy-service/pkg/cloudflare"
+	"proxy-service/pkg/database"
+	"proxy-service/pkg/logger"
+	"proxy-service/pkg/metrics"
+	"time"
+)
+
+type App struct {
+	cfg    *config.Config
+	server *Server
+}
+
+func NewApp(cfg *config.Config) (*App, error) {
+	// Initialize MongoDB
+	db, err := database.NewMongoDB(&cfg.MongoDB)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize Redis
+	redisClient, err := cache.NewRedisCache(&cfg.Redis)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize metrics collector
+	metricsCollector := metrics.NewMetricsCollector()
+
+	log := logger.NewLogger()
+
+	// Initialize Cloudflare tunnel client
+	tunnelClient := cloudflare.NewTunnelClient(cloudflare.TunnelConfig{
+		ID:                cfg.Cloudflare.TunnelID,
+		Token:             cfg.Cloudflare.TunnelToken,
+		TargetURL:         cfg.Proxy.TargetHost,
+		HeartbeatInterval: 30 * time.Second,
+		RetryInterval:     5 * time.Second,
+	}, log)
+
+	// Initialize services
+	services := service.NewServices(service.Deps{
+		Config:       cfg,
+		DB:           db,
+		Cache:        redisClient,
+		Metrics:      metricsCollector,
+		TunnelClient: tunnelClient,
+	})
+
+	// Initialize handlers
+	handlers := handler.NewHandler(handler.Deps{
+		Services: services,
+		Config:   cfg,
+	})
+
+	// Initialize server
+	server := NewServer(cfg, handlers)
+
+	return &App{
+		cfg:    cfg,
+		server: server,
+	}, nil
+}
+
+func (a *App) Start() error {
+	return a.server.Start()
+}
+
+func (a *App) Stop(ctx context.Context) error {
+	return a.server.Stop(ctx)
+}
+
+
+
+=========================================
+File: ./internal/app/server.go
+=========================================
+package app
+
+import (
+	"context"
+	"crypto/tls"
+	"net/http"
+	"proxy-service/internal/config"
+	"proxy-service/internal/handler"
+	"proxy-service/internal/middleware"
+	"proxy-service/pkg/logger"
+	"proxy-service/pkg/validator"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+type Server struct {
+	httpServer *http.Server
+	handler    *handler.Handler
+}
+
+// func NewServer(cfg *config.Config, handler *handler.Handler) *Server {
+// 	// Initialize router
+// 	router := gin.New()
+
+// 	// Add middlewares
+// 	router.Use(gin.Recovery())
+// 	router.Use(middleware.Logger())
+// 	router.Use(middleware.Metrics(handler.MetricsCollector()))
+
+// 	// Setup routes
+// 	api := router.Group("/api/v1")
+// 	{
+// 		// Auth routes
+// 		auth := api.Group("/auth")
+// 		{
+// 			auth.POST("/token", handler.Auth.GenerateToken)
+// 			auth.POST("/verify", handler.Auth.VerifyToken)
+// 		}
+
+// 		// Protected routes
+// 		protected := api.Group("")
+// 		protected.Use(middleware.Auth(handler.Auth))
+// 		{
+// 			// Proxy routes
+// 			protected.Any("/*path", handler.Proxy.HandleRequest)
+
+// 			// Metrics routes
+// 			protected.GET("/metrics", handler.Metrics.GetMetrics)
+// 		}
+// 	}
+
+// 	// Configure TLS
+// 	tlsConfig := &tls.Config{
+// 		MinVersion:               tls.VersionTLS12,
+// 		CurvePreferences:         []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
+// 		PreferServerCipherSuites: true,
+// 	}
+
+// 	// Create HTTP server
+// 	return &Server{
+// 		httpServer: &http.Server{
+// 			Addr:              ":" + cfg.Server.Port,
+// 			Handler:           router,
+// 			TLSConfig:         tlsConfig,
+// 			ReadTimeout:       time.Duration(cfg.Server.ReadTimeout) * time.Second,
+// 			WriteTimeout:      time.Duration(cfg.Server.WriteTimeout) * time.Second,
+// 			IdleTimeout:       time.Duration(cfg.Server.IdleTimeout) * time.Second,
+// 			ReadHeaderTimeout: 20 * time.Second,
+// 		},
+// 		handler: handler,
+// 	}
+// }
+
+func NewServer(cfg *config.Config, handler *handler.Handler) *Server {
+	// Initialize router
+	router := gin.New()
+
+	// Get cache from handler
+	cache := handler.Cache()
+
+	// Initialize logger
+	log := logger.NewLogger()
+
+	// Create request validator
+	validator := validator.NewRequestValidator(&cfg.Agent, cache, log)
+
+	// Create resilience middleware
+	resilience := middleware.NewResilienceMiddleware(validator)
+
+	// Add middlewares
+	router.Use(gin.Recovery())
+	router.Use(middleware.Logger())
+	router.Use(middleware.Metrics(handler.MetricsCollector()))
+	router.Use(resilience.Handle())
+
+	// Setup routes
+	api := router.Group("/api/v1")
+	{
+		// Auth routes
+		auth := api.Group("/auth")
+		{
+			auth.POST("/token", handler.Auth.GenerateToken)
+			auth.POST("/verify", handler.Auth.VerifyToken)
+		}
+
+		// Protected routes
+		protected := api.Group("")
+		// Pass the entire handler instead of just the Auth handler
+		protected.Use(middleware.Auth(handler))
+		{
+			// Proxy routes
+			protected.Any("/*path", handler.Proxy.HandleRequest)
+
+			// Metrics routes
+			protected.GET("/metrics", handler.Metrics.GetMetrics)
+		}
+	}
+
+	tlsConfig := &tls.Config{
+		MinVersion:               tls.VersionTLS12,
+		CurvePreferences:         []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
+		PreferServerCipherSuites: true,
+	}
+
+	return &Server{
+		httpServer: &http.Server{
+			Addr:              ":" + cfg.Server.Port,
+			Handler:           router,
+			TLSConfig:         tlsConfig,
+			ReadTimeout:       time.Duration(cfg.Server.ReadTimeout) * time.Second,
+			WriteTimeout:      time.Duration(cfg.Server.WriteTimeout) * time.Second,
+			IdleTimeout:       time.Duration(cfg.Server.IdleTimeout) * time.Second,
+			ReadHeaderTimeout: 20 * time.Second,
+		},
+		handler: handler,
+	}
+}
+
+func (s *Server) Start() error {
+	return s.httpServer.ListenAndServeTLS(
+		s.handler.Config().Server.TLSCertFile,
+		s.handler.Config().Server.TLSKeyFile,
+	)
+}
+
+func (s *Server) Stop(ctx context.Context) error {
+	return s.httpServer.Shutdown(ctx)
+}
+
+
+
+=========================================
+File: ./internal/config/config.go
+=========================================
+package config
+
+import (
+	"time"
+
+	"github.com/spf13/viper"
+)
+
+type Config struct {
+	Server     ServerConfig     `mapstructure:"server"`
+	MongoDB    MongoDBConfig    `mapstructure:"mongodb"`
+	Redis      RedisConfig      `mapstructure:"redis"`
+	JWT        JWTConfig        `mapstructure:"jwt"`
+	Metrics    MetricsConfig    `mapstructure:"metrics"`
+	Proxy      ProxyConfig      `mapstructure:"proxy"`
+	Cloudflare CloudflareConfig `mapstructure:"cloudflare"`
+	Agent      AgentConfig      `mapstructure:"agent"`
+}
+
+type CloudflareConfig struct {
+	TunnelID          string        `mapstructure:"tunnel_id"`
+	TunnelToken       string        `mapstructure:"tunnel_token"`
+	HeartbeatInterval time.Duration `mapstructure:"heartbeat_interval"`
+	RetryInterval     time.Duration `mapstructure:"retry_interval"`
+	MaxRetries        int           `mapstructure:"max_retries"`
+	ConnectionTimeout time.Duration `mapstructure:"connection_timeout"`
+	HandshakeTimeout  time.Duration `mapstructure:"handshake_timeout"`
+}
+
+type AgentConfig struct {
+	MaxConnections    int            `mapstructure:"max_connections"`
+	ConnectionTimeout time.Duration  `mapstructure:"connection_timeout"`
+	HeartbeatInterval time.Duration  `mapstructure:"heartbeat_interval"`
+	MaxRequestTimeout time.Duration  `mapstructure:"max_request_timeout"`
+	MaxRetries        int            `mapstructure:"max_retries"`
+	RetryInterval     time.Duration  `mapstructure:"retry_interval"`
+	BufferSize        int            `mapstructure:"buffer_size"`
+	AllowedOrigins    []string       `mapstructure:"allowed_origins"`
+	Security          SecurityConfig `mapstructure:"security"`
+	MaxRequestSize    int64          `mapstructure:"max_request_size"`
+}
+
+type SecurityConfig struct {
+	AllowedOrigins []string        `mapstructure:"allowed_origins"`
+	RateLimit      RateLimitConfig `mapstructure:"rate_limit"`
+}
+
+type RateLimitConfig struct {
+	Requests   int           `mapstructure:"requests"`
+	TimeWindow time.Duration `mapstructure:"time_window"`
+}
+
+// Add new ProxyConfig struct
+type ProxyConfig struct {
+	TargetHost string `mapstructure:"target_host"`
+}
+
+type ServerConfig struct {
+	Port         string `mapstructure:"port"`
+	TLSCertFile  string `mapstructure:"tls_cert_file"`
+	TLSKeyFile   string `mapstructure:"tls_key_file"`
+	ReadTimeout  int    `mapstructure:"read_timeout"`
+	WriteTimeout int    `mapstructure:"write_timeout"`
+	IdleTimeout  int    `mapstructure:"idle_timeout"`
+}
+
+type MongoDBConfig struct {
+	URI      string `mapstructure:"uri"`
+	Database string `mapstructure:"database"`
+	PoolSize int    `mapstructure:"pool_size"`
+	Timeout  int    `mapstructure:"timeout"`
+}
+
+type RedisConfig struct {
+	Address      string `mapstructure:"address"`
+	Password     string `mapstructure:"password"`
+	DB           int    `mapstructure:"db"`
+	MaxRetries   int    `mapstructure:"max_retries"`
+	PoolSize     int    `mapstructure:"pool_size"`
+	MinIdleConns int    `mapstructure:"min_idle_conns"`
+}
+
+type JWTConfig struct {
+	Secret          string `mapstructure:"secret"`
+	ExpirationHours int    `mapstructure:"expiration_hours"`
+}
+
+type MetricsConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Port    string `mapstructure:"port"`
+}
+
+func LoadConfig() (*Config, error) {
+	viper.SetConfigName("config")
+	viper.SetConfigType("yaml")
+	viper.AddConfigPath(".")
+	viper.AddConfigPath("./config")
+
+	if err := viper.ReadInConfig(); err != nil {
+		return nil, err
+	}
+
+	var config Config
+	if err := viper.Unmarshal(&config); err != nil {
+		return nil, err
+	}
+
+	return &config, nil
+}
+
+
+
+=========================================
+File: ./internal/config/validator.go
+=========================================
+package config
+
+import (
+	"fmt"
+	"strings"
+)
+
+func (c *Config) Validate() error {
+	var errors []string
+
+	// Validate Server config
+	if c.Server.Port == "" {
+		errors = append(errors, "server port is required")
+	}
+	if c.Server.TLSCertFile == "" {
+		errors = append(errors, "TLS certificate file is required")
+	}
+	if c.Server.TLSKeyFile == "" {
+		errors = append(errors, "TLS key file is required")
+	}
+
+	// Validate MongoDB config
+	if c.MongoDB.URI == "" {
+		errors = append(errors, "MongoDB URI is required")
+	}
+	if c.MongoDB.Database == "" {
+		errors = append(errors, "MongoDB database name is required")
+	}
+
+	// Validate Redis config
+	if c.Redis.Address == "" {
+		errors = append(errors, "Redis address is required")
+	}
+
+	// Validate JWT config
+	if c.JWT.Secret == "" {
+		errors = append(errors, "JWT secret is required")
+	}
+	if c.JWT.ExpirationHours <= 0 {
+		errors = append(errors, "JWT expiration hours must be positive")
+	}
+
+	// Validate Cloudflare config (moved from Cloudflare to c.Cloudflare)
+	if c.Cloudflare.TunnelID == "" {
+		errors = append(errors, "Cloudflare tunnel ID is required")
+	}
+	if c.Cloudflare.TunnelToken == "" {
+		errors = append(errors, "Cloudflare tunnel token is required")
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("configuration validation failed: %s", strings.Join(errors, "; "))
+	}
+
+	return nil
+}
+
+
+
+=========================================
+File: ./internal/handler/agent/agent_handler.go
+=========================================
+package agent
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"go.uber.org/zap"
+
+	"proxy-service/internal/config"
+	"proxy-service/internal/models"
+	"proxy-service/internal/service/agent"
+	"proxy-service/pkg/cache"
+	"proxy-service/pkg/logger"
+	"proxy-service/pkg/metrics"
+	"proxy-service/pkg/validator"
+
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+)
+
+// Message types for WebSocket communication
+const (
+	MessageTypeProxyRequest  = "proxy_request"
+	MessageTypeProxyResponse = "proxy_response"
+	MessageTypeHeartbeat     = "heartbeat"
+	MessageTypeConfig        = "config_update"
+	MessageTypeMetrics       = "metrics_update"
+	MessageTypeError         = "error"
+
+	AgentTokenExpiry  = 24 * time.Hour
+	TokenCachePrefix  = "agent_token:"
+	HeartbeatInterval = 30 * time.Second
+)
+
+type WSMessage struct {
+	Type      string      `json:"type"`
+	RequestID string      `json:"request_id,omitempty"`
+	Payload   interface{} `json:"payload"`
+	Timestamp time.Time   `json:"timestamp"`
+}
+
+type AgentHandler struct {
+	agentManager *agent.AgentManager
+	metrics      *metrics.MetricsCollector
+	upgrader     websocket.Upgrader
+	authService  AuthService
+	cache        *cache.RedisCache
+	config       *config.Config
+	logger       *logger.Logger
+	validator    *validator.RequestValidator
+}
+
+type AgentSecurityConfig struct {
+	TLSConfig      *tls.Config
+	IPWhitelist    []string
+	MaxRequestSize int64
+	RequestTimeout time.Duration
+}
+
+func NewAgentHandler(
+	agentManager *agent.AgentManager,
+	authService AuthService,
+	cache *cache.RedisCache,
+	config *config.Config,
+	metrics *metrics.MetricsCollector,
+	logger *logger.Logger,
+) *AgentHandler {
+	h := &AgentHandler{
+		agentManager: agentManager,
+		authService:  authService,
+		cache:        cache,
+		config:       config,
+		metrics:      metrics,
+		logger:       logger,
+		upgrader: websocket.Upgrader{
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+			CheckOrigin: func(r *http.Request) bool {
+				// 1. Get agent and customer IDs from headers
+				agentID := r.Header.Get("X-Agent-ID")
+				customerID := r.Header.Get("X-Customer-ID")
+
+				// 2. Validate basic requirements
+				if agentID == "" || customerID == "" {
+					return false
+				}
+
+				// 3. Check origin against allowed domains if configured
+				if config.Agent.AllowedOrigins != nil && len(config.Agent.AllowedOrigins) > 0 {
+					origin := r.Header.Get("Origin")
+					if origin == "" {
+						return false
+					}
+
+					// Check if origin is in allowed list
+					for _, allowed := range config.Agent.AllowedOrigins {
+						if origin == allowed {
+							return true
+						}
+					}
+					return false
+				}
+
+				// 4. If no specific origins are configured, allow only authenticated agents
+				return true // Authentication is handled in HandleConnection
+			},
+			HandshakeTimeout: 10 * time.Second,
+		},
+	}
+	h.validator = validator.NewRequestValidator(&config.Agent, cache, logger)
+	return h
+}
+
+// HandleConnection is the main WebSocket endpoint for agent communication
+func (h *AgentHandler) HandleConnection(c *gin.Context) {
+	// 1. Validate agent credentials
+	agentID := c.GetHeader("X-Agent-ID")
+	customerID := c.GetHeader("X-Customer-ID")
+	token := c.GetHeader("X-Agent-Token")
+
+	if err := h.validateAgentCredentials(agentID, customerID, token); err != nil {
+		h.logger.Error("Agent authentication failed", "error", err, "agent_id", agentID)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid agent credentials"})
+		return
+	}
+
+	// 2. Upgrade connection to WebSocket
+	conn, err := h.upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		h.logger.Error("WebSocket upgrade failed", "error", err, "agent_id", agentID)
+		return
+	}
+
+	// 3. Initialize agent connection
+	agentConn := &models.AgentConnection{
+		ID:         agentID,
+		CustomerID: customerID,
+		Conn:       conn,
+		StartTime:  time.Now(),
+		LastPing:   time.Now(),
+	}
+
+	// 4. Register agent with manager
+	if err := h.agentManager.RegisterAgent(c.Request.Context(), agentID, customerID, conn); err != nil {
+		h.logger.Error("Agent registration failed", "error", err, "agent_id", agentID)
+		conn.Close()
+		return
+	}
+
+	// 5. Record connection metric
+	h.metrics.RecordAgentConnection(customerID)
+
+	// 6. Start message handling routines
+	go h.handleMessages(agentConn)
+	go h.monitorHeartbeat(agentConn)
+
+	h.logger.Info("Agent connected successfully", "agent_id", agentID, "customer_id", customerID)
+}
+
+func (h *AgentHandler) handleHeartbeat(agent *models.AgentConnection) {
+	agent.LastPing = time.Now()
+	h.metrics.RecordAgentHeartbeat(agent.CustomerID, agent.ID)
+
+	// Check for config updates
+	if config := h.agentManager.GetConfigUpdate(agent.ID); config != nil {
+		h.sendMessage(agent, MessageTypeConfig, config)
+	}
+}
+
+func (h *AgentHandler) handleProxyRequest(agent *models.AgentConnection, msg *WSMessage) {
+	var proxyReq models.ProxyRequest
+	if err := json.Unmarshal([]byte(fmt.Sprintf("%v", msg.Payload)), &proxyReq); err != nil {
+		h.logger.Error("Failed to decode proxy request", "error", err, "agent_id", agent.ID)
+		h.sendError(agent, msg.RequestID, "invalid request format")
+		return
+	}
+
+	// Process proxy request through manager
+	response, err := h.agentManager.HandleProxyRequest(context.Background(), &proxyReq)
+	if err != nil {
+		h.logger.Error("Proxy request failed", "error", err, "agent_id", agent.ID)
+		h.sendError(agent, msg.RequestID, err.Error())
+		return
+	}
+
+	// Send response back to agent
+	h.sendMessage(agent, MessageTypeProxyResponse, response)
+}
+
+func (h *AgentHandler) handleMetricsUpdate(agent *models.AgentConnection, msg *WSMessage) {
+	var metrics models.AgentMetrics
+	if err := json.Unmarshal([]byte(fmt.Sprintf("%v", msg.Payload)), &metrics); err != nil {
+		h.logger.Error("Failed to decode metrics", "error", err, "agent_id", agent.ID)
+		return
+	}
+
+	h.metrics.UpdateAgentMetrics(agent.CustomerID, agent.ID, &metrics)
+}
+
+func (h *AgentHandler) monitorHeartbeat(agent *models.AgentConnection) {
+	ticker := time.NewTicker(HeartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if time.Since(agent.LastPing) > HeartbeatInterval*3 {
+				h.logger.Warn("Agent heartbeat timeout",
+					zap.String("agent_id", agent.ID),
+					zap.Duration("last_ping", time.Since(agent.LastPing)))
+				agent.Conn.Close()
+				return
+			}
+		}
+	}
+}
+
+func (h *AgentHandler) handleMessages(agent *models.AgentConnection) {
+	defer func() {
+		h.handleDisconnection(agent)
+	}()
+
+	for {
+		messageType, message, err := agent.Conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				h.logger.Error("WebSocket read error",
+					zap.Error(err),
+					zap.String("agent_id", agent.ID))
+			}
+			return
+		}
+
+		if messageType == websocket.TextMessage {
+			var wsMessage WSMessage
+			if err := json.Unmarshal(message, &wsMessage); err != nil {
+				h.logger.Error("Failed to parse message",
+					zap.Error(err),
+					zap.String("agent_id", agent.ID))
+				continue
+			}
+
+			switch wsMessage.Type {
+			case MessageTypeHeartbeat:
+				h.handleHeartbeat(agent)
+			case MessageTypeProxyRequest:
+				h.handleProxyRequest(agent, &wsMessage)
+			case MessageTypeMetrics:
+				h.handleMetricsUpdate(agent, &wsMessage)
+			default:
+				h.logger.Warn("Unknown message type",
+					zap.String("message_type", wsMessage.Type),
+					zap.String("agent_id", agent.ID))
+			}
+		}
+	}
+}
+
+func (h *AgentHandler) handleDisconnection(agent *models.AgentConnection) {
+	h.agentManager.DeregisterAgent(context.Background(), agent.ID, agent.CustomerID)
+	h.metrics.RecordAgentDisconnection(agent.CustomerID)
+	agent.Conn.Close()
+	h.logger.Info("Agent disconnected", "agent_id", agent.ID)
+}
+
+func (h *AgentHandler) sendMessage(agent *models.AgentConnection, messageType string, payload interface{}) {
+	msg := WSMessage{
+		Type:      messageType,
+		Payload:   payload,
+		Timestamp: time.Now(),
+	}
+
+	if err := agent.Conn.WriteJSON(msg); err != nil {
+		h.logger.Error("Failed to send message", "error", err, "agent_id", agent.ID)
+	}
+}
+
+func (h *AgentHandler) sendError(agent *models.AgentConnection, requestID, errorMsg string) {
+	h.sendMessage(agent, MessageTypeError, gin.H{
+		"request_id": requestID,
+		"error":      errorMsg,
+	})
+}
+
+// func NewAgentHandler(agentManager *agent.AgentManager, metrics *metrics.MetricsCollector) *AgentHandler {
+// 	return &AgentHandler{
+// 		agentManager: agentManager,
+// 		metrics:      metrics,
+// 		upgrader: websocket.Upgrader{
+// 			ReadBufferSize:  1024,
+// 			WriteBufferSize: 1024,
+// 			CheckOrigin: func(r *http.Request) bool {
+// 				// Implement proper origin checking
+// 				return true
+// 			},
+// 			HandshakeTimeout: 10 * time.Second,
+// 		},
+// 	}
+// }
+
+// HandleConnection handles new agent websocket connections
+// func (h *AgentHandler) HandleConnection(c *gin.Context) {
+// 	// Validate agent credentials
+// 	agentID := c.GetHeader("X-Agent-ID")
+// 	customerID := c.GetHeader("X-Customer-ID")
+// 	token := c.GetHeader("X-Agent-Token")
+
+// 	if err := h.validateAgentCredentials(agentID, customerID, token); err != nil {
+// 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid agent credentials"})
+// 		return
+// 	}
+
+// 	// Upgrade connection to WebSocket
+// 	conn, err := h.upgrader.Upgrade(c.Writer, c.Request, nil)
+// 	if err != nil {
+// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "websocket upgrade failed"})
+// 		return
+// 	}
+
+// 	// Register agent
+// 	if err := h.agentManager.RegisterAgent(c.Request.Context(), agentID, customerID, conn); err != nil {
+// 		conn.Close()
+// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent registration failed"})
+// 		return
+// 	}
+
+// 	// Record metrics
+// 	h.metrics.RecordAgentConnection(customerID)
+// }
+
+func (h *AgentHandler) validateAgentCredentials(agentID, customerID, token string) error {
+	ctx := context.Background()
+
+	// 1. Basic validation
+	if agentID == "" || customerID == "" || token == "" {
+		return fmt.Errorf("missing required credentials")
+	}
+
+	// 2. Check cache first for rate limiting and recently validated tokens
+	cacheKey := fmt.Sprintf("%s%s_%s", TokenCachePrefix, customerID, agentID)
+	if cachedToken, err := h.cache.Get(ctx, cacheKey); err == nil {
+		if cachedToken == token {
+			return nil // Token recently validated
+		}
+	}
+
+	// 3. Get customer details
+	customer, err := h.authService.GetCustomer(ctx, customerID)
+	if err != nil {
+		return fmt.Errorf("invalid customer: %w", err)
+	}
+
+	// 4. Verify customer status
+	if customer.Status != "active" {
+		return fmt.Errorf("customer account is not active")
+	}
+
+	// 5. Get agent details
+	agent, err := h.authService.GetAgent(ctx, agentID)
+	if err != nil {
+		return fmt.Errorf("invalid agent: %w", err)
+	}
+
+	// 6. Verify agent belongs to customer
+	if agent.CustomerID != customerID {
+		return fmt.Errorf("agent does not belong to customer")
+	}
+
+	// 7. Verify agent status
+	if agent.Status != "active" {
+		return fmt.Errorf("agent is not active")
+	}
+
+	// 8. Validate token format and expiry
+	if err := h.validateTokenFormat(token); err != nil {
+		return fmt.Errorf("invalid token format: %w", err)
+	}
+
+	// 9. Verify token signature
+	expectedToken := h.generateAgentToken(agent, customer.APIKey)
+	if !h.compareTokens(token, expectedToken) {
+		return fmt.Errorf("invalid token signature")
+	}
+
+	// 10. Cache the validated token
+	err = h.cache.Set(ctx, cacheKey, token, 15*time.Minute)
+	if err != nil {
+		h.logger.Error("failed to cache token", "error", err)
+		// Don't return error here as validation was successful
+	}
+
+	return nil
+}
+
+func (h *AgentHandler) validateTokenFormat(token string) error {
+	// Token format: timestamp.signature
+	parts := strings.Split(token, ".")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid token format")
+	}
+
+	// Verify timestamp
+	timestamp, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid timestamp")
+	}
+
+	// Check token expiry
+	if time.Unix(timestamp, 0).Add(AgentTokenExpiry).Before(time.Now()) {
+		return fmt.Errorf("token expired")
+	}
+
+	return nil
+}
+
+func (h *AgentHandler) generateAgentToken(agent *models.Agent, apiKey string) string {
+	timestamp := time.Now().Unix()
+	message := fmt.Sprintf("%s:%s:%d", agent.ID, agent.CustomerID, timestamp)
+
+	mac := hmac.New(sha256.New, []byte(apiKey))
+	mac.Write([]byte(message))
+	signature := hex.EncodeToString(mac.Sum(nil))
+
+	return fmt.Sprintf("%d.%s", timestamp, signature)
+}
+
+func (h *AgentHandler) compareTokens(providedToken, expectedToken string) bool {
+	// Use constant-time comparison to prevent timing attacks
+	return hmac.Equal([]byte(providedToken), []byte(expectedToken))
+}
+
+// AuthService interface for dependency injection
+type AuthService interface {
+	GetCustomer(ctx context.Context, customerID string) (*models.Customer, error)
+	GetAgent(ctx context.Context, agentID string) (*models.Agent, error)
+}
+
+// HandleAgentHealth handles agent health check endpoints
+func (h *AgentHandler) HandleAgentHealth(c *gin.Context) {
+	agentID := c.GetHeader("X-Agent-ID")
+	if status := h.agentManager.GetAgentStatus(agentID); status == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "agent not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "healthy"})
+}
+
+func (h *AgentHandler) HandleAgentDeregistration(c *gin.Context) {
+	agentID := c.GetHeader("X-Agent-ID")
+	customerID := c.GetHeader("X-Customer-ID")
+
+	if err := h.agentManager.DeregisterAgent(c.Request.Context(), agentID, customerID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"status": "error",
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	// Record metric for agent deregistration
+	h.metrics.RecordAgentDisconnection(customerID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":   "deregistered",
+		"agent_id": agentID,
+	})
+}
+
+// Add these methods to AgentHandler
+func (h *AgentHandler) HandleAgentMetrics(c *gin.Context) {
+	agentID := c.GetHeader("X-Agent-ID")
+	customerID := c.GetHeader("X-Customer-ID")
+
+	metrics, err := h.agentManager.GetAgentMetrics(c.Request.Context(), agentID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"status": "error",
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	// Record metrics
+	h.metrics.UpdateAgentUptime(customerID, agentID, metrics.Uptime)
+	h.metrics.UpdateAgentMemoryUsage(customerID, agentID, metrics.MemoryUsage)
+	h.metrics.UpdateAgentCPUUsage(customerID, agentID, metrics.CPUUsage)
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":   "success",
+		"agent_id": agentID,
+		"metrics":  metrics,
+	})
+}
+
+func (h *AgentHandler) HandleAgentRegistration(c *gin.Context) {
+	// Implementation for agent registration
+	var agent models.Agent
+	if err := c.ShouldBindJSON(&agent); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Add your registration logic
+	c.JSON(http.StatusOK, gin.H{"status": "registered"})
+}
+
+
+
+=========================================
+File: ./internal/handler/auth_handler.go
+=========================================
+package handler
+
+import (
+	"net/http"
+	"proxy-service/internal/models"
+	"proxy-service/internal/service"
+
+	"github.com/gin-gonic/gin"
+)
+
+type AuthHandler struct {
+	authService *service.AuthService
+}
+
+func NewAuthHandler(service *service.AuthService) *AuthHandler {
+	return &AuthHandler{
+		authService: service,
+	}
+}
+
+func (h *AuthHandler) GenerateToken(c *gin.Context) {
+	var req models.AuthRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request format"})
+		return
+	}
+
+	token, err := h.authService.GenerateToken(c.Request.Context(), req.APIKey)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, token)
+}
+
+func (h *AuthHandler) VerifyToken(c *gin.Context) {
+	token := c.GetHeader("Authorization")
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing token"})
+		return
+	}
+
+	claims, err := h.authService.VerifyToken(c.Request.Context(), token)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, claims)
+}
+
+
+
+=========================================
+File: ./internal/handler/handler.go
+=========================================
+package handler
+
+import (
+	"proxy-service/internal/config"
+	"proxy-service/internal/service"
+	"proxy-service/pkg/cache"
+	"proxy-service/pkg/metrics"
+)
+
+type Deps struct {
+	Services *service.Services
+	Config   *config.Config
+	Cache    *cache.RedisCache
+}
+
+type Handler struct {
+	Auth     *AuthHandler
+	Proxy    *ProxyHandler
+	Metrics  *MetricsHandler
+	services *service.Services
+	config   *config.Config
+	cache    *cache.RedisCache
+}
+
+func NewHandler(deps Deps) *Handler {
+	return &Handler{
+		Auth:     NewAuthHandler(deps.Services.Auth),
+		Proxy:    NewProxyHandler(deps.Services.Proxy, deps.Cache), // This is correct now
+		Metrics:  NewMetricsHandler(deps.Services.Metrics),
+		services: deps.Services,
+		config:   deps.Config,
+		cache:    deps.Cache,
+	}
+}
+
+func (h *Handler) Config() *config.Config {
+	return h.config
+}
+
+func (h *Handler) MetricsCollector() *metrics.MetricsCollector {
+	if h.services != nil && h.services.Metrics != nil {
+		return h.services.Metrics.GetCollector()
+	}
+	return nil
+}
+
+func (h *Handler) GetAuthService() *service.AuthService {
+	return h.services.Auth
+}
+
+func (h *Handler) Cache() *cache.RedisCache {
+	return h.cache
+}
+
+
+
+=========================================
+File: ./internal/handler/metrics_handler.go
+=========================================
+package handler
+
+import (
+	"net/http"
+	"proxy-service/internal/service"
+
+	"github.com/gin-gonic/gin"
+)
+
+type MetricsHandler struct {
+	metricsService *service.MetricsService
+}
+
+func NewMetricsHandler(service *service.MetricsService) *MetricsHandler {
+	return &MetricsHandler{
+		metricsService: service,
+	}
+}
+
+func (h *MetricsHandler) GetMetrics(c *gin.Context) {
+	customerID := c.GetString("customer_id")
+
+	// Get metrics
+	metrics, err := h.metricsService.GetMetrics(c.Request.Context(), customerID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to get metrics",
+			"code":  "METRICS_FETCH_ERROR",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, metrics)
+}
+
+
+
+=========================================
+File: ./internal/handler/proxy_handler.go
+=========================================
+package handler
+
+import (
+	"io"
+	"net/http"
+	"proxy-service/internal/service"
+	"proxy-service/pkg/cache"
+	"proxy-service/pkg/logger"
+
+	"github.com/gin-gonic/gin"
+)
+
+type ProxyHandler struct {
+	proxyService *service.ProxyService
+	logger       *logger.Logger
+	cache        *cache.RedisCache
+}
+
+func NewProxyHandler(service *service.ProxyService, cache *cache.RedisCache) *ProxyHandler {
+	return &ProxyHandler{
+		proxyService: service,
+		logger:       logger.NewLogger(),
+		cache:        cache,
+	}
+}
+
+func (h *ProxyHandler) HandleRequest(c *gin.Context) {
+	customerID := c.GetString("customer_id")
+
+	// Get proxy configuration
+	_, err := h.cache.GetProxyConfig(c.Request.Context(), customerID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get proxy configuration"})
+		return
+	}
+
+	// Forward the request
+	resp, err := h.proxyService.ForwardRequest(c.Request.Context(), c.Request)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "proxy request failed"})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy headers
+	for key, values := range resp.Header {
+		for _, value := range values {
+			c.Header(key, value)
+		}
+	}
+
+	// Set status code
+	c.Status(resp.StatusCode)
+
+	// Copy body
+	if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to copy response"})
+		return
+	}
+}
+
+
+
+=========================================
+File: ./internal/middleware/auth.go
+=========================================
+package middleware
+
+import (
+	"net/http"
+	"proxy-service/internal/handler"
+	"proxy-service/internal/service"
+	"proxy-service/pkg/metrics"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+type AuthMiddleware struct {
+	authService *service.AuthService
+	metrics     *metrics.MetricsCollector
+}
+
+func NewAuthMiddleware(authService *service.AuthService, metrics *metrics.MetricsCollector) *AuthMiddleware {
+	return &AuthMiddleware{
+		authService: authService,
+		metrics:     metrics,
+	}
+}
+
+func (m *AuthMiddleware) ValidateToken() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		startTime := time.Now()
+
+		// Get token from header
+		token := c.GetHeader("Authorization")
+		if token == "" {
+			m.metrics.RecordAuthFailure("missing_token")
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "authorization header required",
+				"code":  "AUTH_HEADER_MISSING",
+			})
+			return
+		}
+
+		// Remove Bearer prefix
+		token = strings.TrimPrefix(token, "Bearer ")
+
+		// Validate token
+		claims, err := m.authService.VerifyToken(c.Request.Context(), token)
+		if err != nil {
+			m.metrics.RecordAuthFailure("invalid_token")
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "invalid token",
+				"code":  "INVALID_TOKEN",
+			})
+			return
+		}
+
+		// Check token expiration
+		if time.Now().After(claims.ExpiresAt.Time) {
+			m.metrics.RecordAuthFailure("token_expired")
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "token expired",
+				"code":  "TOKEN_EXPIRED",
+			})
+			return
+		}
+
+		// Check if route is allowed for this token
+		requestPath := c.Request.URL.Path
+		if !m.authService.IsRouteAllowed(c.Request.Context(), claims.CustomerID, requestPath) {
+			m.metrics.RecordAuthFailure("route_unauthorized")
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "route not authorized",
+				"code":  "ROUTE_UNAUTHORIZED",
+			})
+			return
+		}
+
+		// Set claims in context
+		c.Set("customer_id", claims.CustomerID)
+		c.Set("allowed_routes", claims.AllowedRoutes)
+
+		// Record successful auth
+		m.metrics.RecordAuthSuccess("token_validated")
+		m.metrics.RecordAuthDuration(time.Since(startTime))
+
+		c.Next()
+	}
+}
+
+func Auth(h *handler.Handler) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := c.GetHeader("Authorization")
+		if token == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "authorization header required",
+				"code":  "AUTH_HEADER_MISSING",
+			})
+			return
+		}
+
+		// Remove Bearer prefix if present
+		token = strings.TrimPrefix(token, "Bearer ")
+
+		// Use the exposed GetAuthService method
+		authService := h.GetAuthService()
+
+		// Verify token
+		claims, err := authService.VerifyToken(c.Request.Context(), token)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "invalid token",
+				"code":  "INVALID_TOKEN",
+			})
+			return
+		}
+
+		// Set customer ID and routes in context
+		c.Set("customer_id", claims.CustomerID)
+		c.Set("allowed_routes", claims.AllowedRoutes)
+
+		c.Next()
+	}
+}
+
+
+
+=========================================
+File: ./internal/middleware/logger.go
+=========================================
+package middleware
+
+import (
+	"proxy-service/pkg/logger"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+func Logger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Start timer
+		start := time.Now()
+
+		// Process request
+		c.Next()
+
+		// Log only when request is complete
+		latency := time.Since(start)
+		statusCode := c.Writer.Status()
+		clientIP := c.ClientIP()
+		method := c.Request.Method
+		path := c.Request.URL.Path
+
+		// Log request details
+		logger.Info("request completed",
+			"status", statusCode,
+			"latency", latency,
+			"client_ip", clientIP,
+			"method", method,
+			"path", path,
+		)
+	}
+}
+
+
+
+=========================================
+File: ./internal/middleware/metrics.go
+=========================================
+package middleware
+
+import (
+	"proxy-service/pkg/metrics"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+func Metrics(collector *metrics.MetricsCollector) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+
+		// Get customer ID from context, use "unknown" if not found
+		customerID, exists := c.Get("customer_id")
+		custID := "unknown"
+		if exists {
+			custID = customerID.(string)
+		}
+
+		// Process request
+		c.Next()
+
+		// Record metrics after request is processed
+		duration := time.Since(start)
+		path := c.Request.URL.Path
+		method := c.Request.Method
+		status := c.Writer.Status()
+
+		// Record various metrics
+		collector.RecordRequestCount(custID, path, method, status)
+		collector.RecordRequestDuration(custID, path, method, duration)
+		collector.RecordResponseSize(custID, path, float64(c.Writer.Size()))
+
+		// Record error metrics if applicable
+		if status >= 400 {
+			errorType := "client_error"
+			if status >= 500 {
+				errorType = "server_error"
+			}
+			collector.RecordError(custID, errorType)
+		}
+	}
+}
+
+
+
+=========================================
+File: ./internal/middleware/proxy.go
+=========================================
+package middleware
+
+import (
+	"net/http"
+	"proxy-service/pkg/utils"
+
+	"github.com/gin-gonic/gin"
+)
+
+func Proxy() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Get allowed routes from context
+		allowedRoutes, exists := c.Get("allowed_routes")
+		if !exists {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "route access not configured",
+				"code":  "ROUTE_ACCESS_NOT_CONFIGURED",
+			})
+			return
+		}
+
+		// Check if current path is allowed
+		if !utils.IsRouteAllowed(c.Request.URL.Path, allowedRoutes.([]string)) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "route not allowed",
+				"code":  "ROUTE_NOT_ALLOWED",
+			})
+			return
+		}
+
+		// Add proxy headers
+		c.Request.Header.Set("X-Forwarded-For", c.ClientIP())
+		c.Request.Header.Set("X-Real-IP", c.ClientIP())
+		c.Request.Header.Set("X-Proxy-ID", "proxy-service")
+
+		c.Next()
+	}
+}
+
+
+
+=========================================
+File: ./internal/middleware/recovery.go
+=========================================
+package middleware
+
+import (
+	"net/http"
+	"proxy-service/pkg/logger"
+	"runtime/debug"
+
+	"github.com/gin-gonic/gin"
+)
+
+func Recovery() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		defer func() {
+			if err := recover(); err != nil {
+				// Log the error and stack trace
+				logger.Error("panic recovered",
+					"error", err,
+					"stack", string(debug.Stack()),
+					"path", c.Request.URL.Path,
+					"method", c.Request.Method,
+				)
+
+				// Get customer ID if available
+				customerID, exists := c.Get("customer_id")
+				if exists {
+					logger.Error("customer context",
+						"customer_id", customerID,
+					)
+				}
+
+				// Return error response
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+					"error": "internal server error",
+					"code":  "INTERNAL_SERVER_ERROR",
+				})
+			}
+		}()
+
+		c.Next()
+	}
+
+}
+
+
+
+=========================================
+File: ./internal/middleware/resilience.go
+=========================================
+package middleware
+
+import (
+	"fmt"
+	"net/http"
+	"proxy-service/pkg/circuitbreaker"
+	"proxy-service/pkg/validator"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+type ResilienceMiddleware struct {
+	validator      *validator.RequestValidator
+	circuitBreaker *circuitbreaker.CircuitBreaker
+}
+
+func NewResilienceMiddleware(validator *validator.RequestValidator) *ResilienceMiddleware {
+	cb := circuitbreaker.New(circuitbreaker.CircuitBreakerConfig{
+		MaxFailures: 5,
+		Timeout:     time.Second * 30,
+	})
+
+	return &ResilienceMiddleware{
+		validator:      validator,
+		circuitBreaker: cb,
+	}
+}
+
+// Handle wraps an http.Handler with validation and circuit breaker
+func (m *ResilienceMiddleware) Handle() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 1. Validate request
+		if err := m.validator.ValidateRequest(c.Request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+			c.Abort()
+			return
+		}
+
+		// 2. Check circuit breaker
+		if m.circuitBreaker.GetState() == circuitbreaker.StateOpen {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error": "service is temporarily unavailable",
+			})
+			c.Abort()
+			return
+		}
+
+		// 3. Execute request with circuit breaker
+		err := m.circuitBreaker.Execute(c.Request.Context(), func() error {
+			c.Next()
+			if c.Writer.Status() >= 500 {
+				return fmt.Errorf("server error: %d", c.Writer.Status())
+			}
+			return nil
+		})
+
+		if err != nil {
+			if err == circuitbreaker.ErrCircuitOpen {
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error": "service is temporarily unavailable",
+				})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "internal server error",
+				})
+			}
+			c.Abort()
+		}
+	}
+}
+
+
+
+=========================================
+File: ./internal/models/agent_config.go
+=========================================
+package models
+
+import "time"
+
+type AgentConfig struct {
+	CustomerID        string            `json:"customer_id"`
+	MaxConnections    int               `json:"max_connections"`
+	RequestTimeout    time.Duration     `json:"request_timeout"`
+	RetryAttempts     int               `json:"retry_attempts"`
+	RetryDelay        time.Duration     `json:"retry_delay"`
+	HeartbeatInterval time.Duration     `json:"heartbeat_interval"`
+	Features          AgentFeatures     `json:"features"`
+	Security          SecurityConfig    `json:"security"`
+	Routes            []RouteConfig     `json:"routes"`
+	Monitoring        MonitoringConfig  `json:"monitoring"`
+	Settings          map[string]string `json:"settings"`
+	LastUpdated       time.Time         `json:"last_updated"`
+}
+
+type AgentFeatures struct {
+	EnableCompression bool `json:"enable_compression"`
+	EnableCaching     bool `json:"enable_caching"`
+	EnableMetrics     bool `json:"enable_metrics"`
+}
+
+type SecurityConfig struct {
+	EnableTLS      bool            `json:"enable_tls"`
+	MinTLSVersion  string          `json:"min_tls_version"`
+	AllowedOrigins []string        `json:"allowed_origins"`
+	RateLimit      RateLimitConfig `json:"rate_limit"`
+}
+
+type RateLimitConfig struct {
+	Enabled    bool          `json:"enabled"`
+	Requests   int           `json:"requests"`
+	TimeWindow time.Duration `json:"time_window"`
+}
+
+type RouteConfig struct {
+	Path         string        `json:"path"`
+	Methods      []string      `json:"methods"`
+	RateLimit    int           `json:"rate_limit"`
+	Timeout      time.Duration `json:"timeout"`
+	CacheEnabled bool          `json:"cache_enabled"`
+	CacheTTL     time.Duration `json:"cache_ttl"`
+}
+
+type MonitoringConfig struct {
+	MetricsInterval time.Duration `json:"metrics_interval"`
+	LogLevel        string        `json:"log_level"`
+	EnableTracing   bool          `json:"enable_tracing"`
+	SamplingRate    float64       `json:"sampling_rate"`
+}
+
+
+
+=========================================
+File: ./internal/models/agent.go
+=========================================
+package models
+
+import (
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+type Agent struct {
+	ID          string                 `json:"id" bson:"_id"`
+	CustomerID  string                 `json:"customer_id" bson:"customer_id"`
+	Name        string                 `json:"name" bson:"name"`
+	Status      string                 `json:"status" bson:"status"`
+	Version     string                 `json:"version" bson:"version"`
+	LastSeen    time.Time              `json:"last_seen" bson:"last_seen"`
+	CreatedAt   time.Time              `json:"created_at" bson:"created_at"`
+	UpdatedAt   time.Time              `json:"updated_at" bson:"updated_at"`
+	Metadata    map[string]interface{} `json:"metadata" bson:"metadata"`
+	Permissions []string               `json:"permissions" bson:"permissions"`
+}
+
+func (a *Agent) IsActive() bool {
+	return a.Status == "active" &&
+		time.Since(a.LastSeen) < 5*time.Minute // Consider agent inactive if not seen in 5 minutes
+}
+
+type AgentStatus struct {
+	AgentID       string       `json:"agent_id"`
+	Status        string       `json:"status"`
+	LastHeartbeat time.Time    `json:"last_heartbeat"`
+	Version       string       `json:"version"`
+	Metrics       AgentMetrics `json:"metrics"`
+}
+
+type AgentMetrics struct {
+	ConnectionUptime  float64 `json:"connection_uptime"`
+	RequestsProcessed int64   `json:"requests_processed"`
+	AverageLatency    float64 `json:"average_latency"`
+	ErrorCount        int64   `json:"error_count"`
+	MemoryUsage       float64 `json:"memory_usage"`
+	CPUUsage          float64 `json:"cpu_usage"`
+	Uptime            float64 `json:"uptime"`
+}
+
+type AgentConnection struct {
+	ID         string
+	CustomerID string
+	Conn       *websocket.Conn
+	StartTime  time.Time
+	LastPing   time.Time
+}
+
+
+
+=========================================
+File: ./internal/models/auth.go
+=========================================
+package models
+
+import (
+	"time"
+)
+
+type AuthRequest struct {
+	APIKey string `json:"api_key"`
+}
+
+type AuthResponse struct {
+	Token        string `json:"token"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresIn    int    `json:"expires_in"`
+}
+
+type TokenClaims struct {
+	CustomerID    string   `json:"customer_id"`
+	AllowedRoutes []string `json:"allowed_routes"`
+	ExpiresAt     int64    `json:"exp"`
+	IssuedAt      int64    `json:"iat"`
+}
+
+type Customer struct {
+	ID            string    `bson:"_id" json:"id"`
+	Name          string    `bson:"name" json:"name"`
+	APIKey        string    `bson:"api_key" json:"api_key"`
+	Status        string    `bson:"status" json:"status"`
+	AllowedRoutes []string  `bson:"allowed_routes" json:"allowed_routes"`
+	CreatedAt     time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt     time.Time `bson:"updated_at" json:"updated_at"`
+}
+
+
+
+=========================================
+File: ./internal/models/metrics.go
+=========================================
+package models
+
+import "time"
+
+type MetricData struct {
+	ID           string    `bson:"_id" json:"id"`
+	CustomerID   string    `bson:"customer_id" json:"customer_id"`
+	Path         string    `bson:"path" json:"path"`
+	Method       string    `bson:"method" json:"method"`
+	StatusCode   int       `bson:"status_code" json:"status_code"`
+	Latency      float64   `bson:"latency" json:"latency"`
+	RequestSize  int64     `bson:"request_size" json:"request_size"`
+	ResponseSize int64     `bson:"response_size" json:"response_size"`
+	Timestamp    time.Time `bson:"timestamp" json:"timestamp"`
+}
+
+type AggregatedMetrics struct {
+	TotalRequests      int64   `json:"total_requests"`
+	AverageLatency     float64 `json:"average_latency"`
+	ErrorRate          float64 `json:"error_rate"`
+	RequestsPerMinute  float64 `json:"requests_per_minute"`
+	AverageRequestSize int64   `json:"average_request_size"`
+}
+
+type CurrentMetrics struct {
+	ActiveConnections int     `json:"active_connections"`
+	RequestRate       float64 `json:"request_rate"`
+	AverageLatency    float64 `json:"average_latency"`
+	ErrorRate         float64 `json:"error_rate"`
+}
+
+type TimeRange struct {
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
+}
+
+type MetricsResponse struct {
+	CustomerID string            `json:"customer_id"`
+	TimeRange  TimeRange         `json:"time_range"`
+	Aggregated AggregatedMetrics `json:"aggregated"`
+	Current    CurrentMetrics    `json:"current"`
+}
+
+
+
+=========================================
+File: ./internal/models/proxy.go
+=========================================
+package models
+
+import "errors"
+
+type ProxyConfig struct {
+	ID            string            `bson:"_id" json:"id"`
+	CustomerID    string            `bson:"customer_id" json:"customer_id"`
+	TargetURL     string            `bson:"target_url" json:"target_url"`
+	Headers       map[string]string `bson:"headers" json:"headers"`
+	RateLimit     int               `bson:"rate_limit" json:"rate_limit"`
+	Timeout       int               `bson:"timeout" json:"timeout"`
+	RetryCount    int               `bson:"retry_count" json:"retry_count"`
+	CacheEnabled  bool              `bson:"cache_enabled" json:"cache_enabled"`
+	TunnelEnabled bool              `bson:"tunnel_enabled" json:"tunnel_enabled"`
+}
+
+type ProxyRoute struct {
+	Path         string `bson:"path" json:"path"`
+	Method       string `bson:"method" json:"method"`
+	RateLimit    int    `bson:"rate_limit" json:"rate_limit"`
+	CacheEnabled bool   `bson:"cache_enabled" json:"cache_enabled"`
+}
+
+type ProxyRequest struct {
+	RequestID  string            `json:"request_id"`
+	Method     string            `json:"method"`
+	Path       string            `json:"path"`
+	Headers    map[string]string `json:"headers"`
+	Body       []byte            `json:"body"`
+	CustomerID string            `json:"customer_id"`
+	AgentID    string            `json:"agent_id"`
+}
+
+type ProxyResponse struct {
+	RequestID  string            `json:"request_id"`
+	StatusCode int               `json:"status_code"`
+	Headers    map[string]string `json:"headers"`
+	Body       []byte            `json:"body"`
+	Error      string            `json:"error,omitempty"`
+}
+
+func (req *ProxyRequest) Validate() error {
+	if req.CustomerID == "" {
+		return errors.New("customer ID is required")
+	}
+	if req.Path == "" {
+		return errors.New("path is required")
+	}
+	// Add more validation rules
+	return nil
+}
+
+
+
+=========================================
+File: ./internal/models/tunnel.go
+=========================================
+package models
+
+type TunnelConfig struct {
+	ID         string `bson:"_id" json:"id"`
+	CustomerID string `bson:"customer_id" json:"customer_id"`
+	// Only need the target URL since tunnel is pre-configured
+	TargetURL string `bson:"target_url" json:"target_url"`
+	Status    string `bson:"status" json:"status"`
+}
+
+
+
+=========================================
+File: ./internal/repository/agent_repository.go
+=========================================
+package repository
+
+import (
+	"context"
+	"time"
+
+	"proxy-service/internal/models"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+type AgentRepository struct {
+	db *mongo.Database
+}
+
+func NewAgentRepository(db *mongo.Database) *AgentRepository {
+	return &AgentRepository{
+		db: db,
+	}
+}
+
+func (r *AgentRepository) SaveAgent(ctx context.Context, agent *models.Agent) error {
+	collection := r.db.Collection("agents")
+
+	agent.UpdatedAt = time.Now()
+	if agent.CreatedAt.IsZero() {
+		agent.CreatedAt = agent.UpdatedAt
+	}
+
+	opts := options.Update().SetUpsert(true)
+	filter := bson.M{"_id": agent.ID}
+	update := bson.M{"$set": agent}
+
+	_, err := collection.UpdateOne(ctx, filter, update, opts)
+	return err
+}
+
+func (r *AgentRepository) GetAgent(ctx context.Context, agentID string) (*models.Agent, error) {
+	collection := r.db.Collection("agents")
+
+	var agent models.Agent
+	err := collection.FindOne(ctx, bson.M{"_id": agentID}).Decode(&agent)
+	if err != nil {
+		return nil, err
+	}
+
+	return &agent, nil
+}
+
+func (r *AgentRepository) GetAgentsByCustomer(ctx context.Context, customerID string) ([]*models.Agent, error) {
+	collection := r.db.Collection("agents")
+
+	cursor, err := collection.Find(ctx, bson.M{"customer_id": customerID})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var agents []*models.Agent
+	if err = cursor.All(ctx, &agents); err != nil {
+		return nil, err
+	}
+
+	return agents, nil
+}
+
+func (r *AgentRepository) UpdateAgentStatus(ctx context.Context, agentID, status string) error {
+	collection := r.db.Collection("agents")
+
+	update := bson.M{
+		"$set": bson.M{
+			"status":         status,
+			"last_connected": time.Now(),
+			"updated_at":     time.Now(),
+		},
+	}
+
+	_, err := collection.UpdateOne(ctx, bson.M{"_id": agentID}, update)
+	return err
+}
+
+func (r *AgentRepository) DeleteAgent(ctx context.Context, agentID string) error {
+	collection := r.db.Collection("agents")
+	_, err := collection.DeleteOne(ctx, bson.M{"_id": agentID})
+	return err
+}
+
+
+
+=========================================
+File: ./internal/repository/auth_repository.go
+=========================================
+package repository
+
+import (
+	"context"
+	"proxy-service/internal/models"
+	"time"
+
+	"proxy-service/pkg/cache"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+)
+
+type AuthRepository struct {
+	db    *mongo.Database
+	cache *cache.RedisCache
+}
+
+func NewAuthRepository(db *mongo.Database, cache *cache.RedisCache) *AuthRepository {
+	return &AuthRepository{
+		db:    db,
+		cache: cache,
+	}
+}
+
+func (r *AuthRepository) GetCustomerByAPIKey(ctx context.Context, apiKey string) (*models.Customer, error) {
+	// Try cache first
+	if customer, err := r.cache.GetCustomer(ctx, apiKey); err == nil {
+		return customer, nil
+	}
+
+	// Query database
+	var customer models.Customer
+	err := r.db.Collection("customers").FindOne(ctx, bson.M{"api_key": apiKey}).Decode(&customer)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the result
+	r.cache.SetCustomer(ctx, apiKey, &customer, time.Hour)
+	return &customer, nil
+}
+
+func (r *AuthRepository) GetCustomer(ctx context.Context, customerID string) (*models.Customer, error) {
+	var customer models.Customer
+	err := r.db.Collection("customers").FindOne(ctx, bson.M{"_id": customerID}).Decode(&customer)
+	if err != nil {
+		return nil, err
+	}
+	return &customer, nil
+}
+
+
+
+=========================================
+File: ./internal/repository/metrics_repository.go
+=========================================
+package repository
+
+import (
+	"context"
+	"proxy-service/internal/models"
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+)
+
+type MetricsRepository struct {
+	db *mongo.Database
+}
+
+func NewMetricsRepository(db *mongo.Database) *MetricsRepository {
+	return &MetricsRepository{
+		db: db,
+	}
+}
+
+func (r *MetricsRepository) SaveMetric(ctx context.Context, metric *models.MetricData) error {
+	_, err := r.db.Collection("metrics").InsertOne(ctx, metric)
+	return err
+}
+
+func (r *MetricsRepository) GetAggregatedMetrics(ctx context.Context, customerID string, startTime time.Time) (*models.AggregatedMetrics, error) {
+	pipeline := []bson.M{
+		{
+			"$match": bson.M{
+				"customer_id": customerID,
+				"timestamp":   bson.M{"$gte": startTime},
+			},
+		},
+		{
+			"$group": bson.M{
+				"_id":             nil,
+				"total_requests":  bson.M{"$sum": 1},
+				"average_latency": bson.M{"$avg": "$latency"},
+				"error_count": bson.M{"$sum": bson.M{
+					"$cond": []interface{}{bson.M{"$gte": []interface{}{"$status_code", 400}}, 1, 0},
+				}},
+				"total_request_size": bson.M{"$sum": "$request_size"},
+			},
+		},
+	}
+
+	cursor, err := r.db.Collection("metrics").Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []bson.M
+	if err = cursor.All(ctx, &results); err != nil {
+		return nil, err
+	}
+
+	if len(results) == 0 {
+		return &models.AggregatedMetrics{}, nil
+	}
+
+	result := results[0]
+	totalRequests := result["total_requests"].(int64)
+
+	return &models.AggregatedMetrics{
+		TotalRequests:      totalRequests,
+		AverageLatency:     result["average_latency"].(float64),
+		ErrorRate:          float64(result["error_count"].(int32)) / float64(totalRequests),
+		RequestsPerMinute:  float64(totalRequests) / time.Since(startTime).Minutes(),
+		AverageRequestSize: result["total_request_size"].(int64) / totalRequests,
+	}, nil
+}
+
+
+
+=========================================
+File: ./internal/repository/proxy_repository.go
+=========================================
+package repository
+
+import (
+	"context"
+	"proxy-service/internal/models"
+	"proxy-service/pkg/cache"
+
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+)
+
+type ProxyRepository struct {
+	db    *mongo.Database
+	cache *cache.RedisCache
+}
+
+func NewProxyRepository(db *mongo.Database, cache *cache.RedisCache) *ProxyRepository {
+	return &ProxyRepository{
+		db:    db,
+		cache: cache,
+	}
+}
+
+func (r *ProxyRepository) GetConfig(ctx context.Context, customerID string) (*models.ProxyConfig, error) {
+	// Try cache first
+	if config, err := r.cache.GetProxyConfig(ctx, customerID); err == nil {
+		return config, nil
+	}
+
+	// Query database
+	var config models.ProxyConfig
+	err := r.db.Collection("proxy_configs").FindOne(ctx, bson.M{"customer_id": customerID}).Decode(&config)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the result
+	r.cache.SetProxyConfig(ctx, customerID, &config, time.Hour)
+	return &config, nil
+}
+
+
+
+=========================================
+File: ./internal/routes/agent_routes.go
+=========================================
+package routes
+
+import (
+	"proxy-service/internal/handler/agent"
+	"proxy-service/internal/middleware"
+
+	"github.com/gin-gonic/gin"
+)
+
+func SetupAgentRoutes(router *gin.Engine, handler *agent.AgentHandler, authMiddleware *middleware.AuthMiddleware) {
+	// Agent management routes
+	agentGroup := router.Group("/api/v1/agents")
+	{
+		// Agent connection endpoint
+		agentGroup.GET("/connect", handler.HandleConnection)
+
+		// Protected routes requiring authentication
+		protected := agentGroup.Use(authMiddleware.ValidateToken())
+		{
+			protected.GET("/health", handler.HandleAgentHealth)
+			protected.GET("/metrics", handler.HandleAgentMetrics)
+			protected.POST("/register", handler.HandleAgentRegistration)
+			protected.DELETE("/deregister", handler.HandleAgentDeregistration)
+		}
+	}
+}
+
+
+
+=========================================
+File: ./internal/service/agent/agent_manager.go
+=========================================
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sync"
+	"time"
+
+	"proxy-service/internal/models"
+	"proxy-service/pkg/cache"
+	"proxy-service/pkg/logger"
+	"proxy-service/pkg/metrics"
+
+	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
+)
+
+type AgentConnection struct {
+	AgentID    string
+	CustomerID string
+	Connection *websocket.Conn
+	Status     string
+	LastPing   time.Time
+	mutex      sync.RWMutex
+}
+
+type AgentManager struct {
+	connections map[string]*AgentConnection
+	metrics     *metrics.MetricsCollector
+	cache       *cache.Cache
+	mutex       sync.RWMutex
+	logger      *logger.Logger
+}
+
+type AgentMetrics struct {
+	Uptime      float64   `json:"uptime"`
+	MemoryUsage float64   `json:"memory_usage"`
+	CPUUsage    float64   `json:"cpu_usage"`
+	LastUpdated time.Time `json:"last_updated"`
+}
+
+const (
+	configCacheKey = "agent_config:%s"
+	configTTL      = 5 * time.Minute
+)
+
+func NewAgentManager(metrics *metrics.MetricsCollector, cache *cache.Cache) *AgentManager {
+	manager := &AgentManager{
+		connections: make(map[string]*AgentConnection),
+		metrics:     metrics,
+		cache:       cache,
+	}
+
+	// Start cleanup routine
+	go manager.cleanupInactiveAgents()
+
+	return manager
+}
+
+type ProxyRequest struct {
+	Method     string
+	Path       string
+	Headers    map[string][]string
+	Body       []byte
+	CustomerID string
+}
+
+type ProxyResponse struct {
+	StatusCode int
+	Headers    map[string][]string
+	Body       []byte
+}
+
+func (am *AgentManager) RegisterAgent(ctx context.Context, agentID, customerID string, conn *websocket.Conn) error {
+	am.mutex.Lock()
+	defer am.mutex.Unlock()
+
+	// Check if agent already exists
+	if existing, exists := am.connections[agentID]; exists {
+		existing.Connection.Close()
+		delete(am.connections, agentID)
+	}
+
+	// Create new agent connection
+	agent := &AgentConnection{
+		AgentID:    agentID,
+		CustomerID: customerID,
+		Connection: conn,
+		Status:     "connected",
+		LastPing:   time.Now(),
+	}
+
+	// Store connection
+	am.connections[agentID] = agent
+
+	// Record metric
+	am.metrics.RecordAgentConnection(customerID)
+
+	// Start monitoring routine
+	go am.monitorAgent(agent)
+
+	return nil
+}
+
+func (am *AgentManager) GetActiveAgents() []*AgentConnection {
+	am.mutex.RLock()
+	defer am.mutex.RUnlock()
+
+	agents := make([]*AgentConnection, 0, len(am.connections))
+	for _, agent := range am.connections {
+		if agent.Status == "connected" {
+			agents = append(agents, agent)
+		}
+	}
+
+	return agents
+}
+
+func (am *AgentManager) RouteRequest(ctx context.Context, agentID string, request *ProxyRequest) (*ProxyResponse, error) {
+	am.mutex.RLock()
+	agent, exists := am.connections[agentID]
+	am.mutex.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("agent not found")
+	}
+
+	return agent.sendRequest(request)
+}
+
+func (ac *AgentConnection) sendRequest(request *ProxyRequest) (*ProxyResponse, error) {
+	ac.mutex.Lock()
+	defer ac.mutex.Unlock()
+
+	// Send request through websocket
+	if err := ac.Connection.WriteJSON(request); err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+
+	// Read response
+	response := &ProxyResponse{}
+	if err := ac.Connection.ReadJSON(response); err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	return response, nil
+}
+
+func (am *AgentManager) cleanupInactiveAgents() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			am.mutex.Lock()
+			for id, agent := range am.connections {
+				if time.Since(agent.LastPing) > 5*time.Minute {
+					agent.Connection.Close()
+					delete(am.connections, id)
+					am.metrics.RecordAgentDisconnection(agent.CustomerID)
+				}
+			}
+			am.mutex.Unlock()
+		}
+	}
+}
+
+func (am *AgentManager) GetAgentStatus(agentID string) string {
+	am.mutex.RLock()
+	defer am.mutex.RUnlock()
+
+	if agent, exists := am.connections[agentID]; exists {
+		return agent.Status
+	}
+	return ""
+}
+
+func (am *AgentManager) checkAgentHealth(agent *AgentConnection) error {
+	agent.mutex.Lock()
+	defer agent.mutex.Unlock()
+
+	if time.Since(agent.LastPing) > 2*time.Minute {
+		return fmt.Errorf("agent timeout")
+	}
+
+	// Send ping message
+	if err := agent.Connection.WriteControl(
+		websocket.PingMessage,
+		[]byte{},
+		time.Now().Add(10*time.Second),
+	); err != nil {
+		return fmt.Errorf("failed to send ping: %w", err)
+	}
+
+	return nil
+}
+
+func (am *AgentManager) handleAgentDisconnection(agentID string) {
+	am.mutex.Lock()
+	defer am.mutex.Unlock()
+
+	if agent, exists := am.connections[agentID]; exists {
+		// Record metric before removing
+		am.metrics.RecordAgentDisconnection(agent.CustomerID)
+
+		// Close connection
+		agent.Connection.Close()
+
+		// Remove from connections map
+		delete(am.connections, agentID)
+	}
+}
+
+func (am *AgentManager) monitorAgent(agent *AgentConnection) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if err := am.checkAgentHealth(agent); err != nil {
+				am.handleAgentDisconnection(agent.AgentID)
+				return
+			}
+		}
+	}
+}
+
+func (am *AgentManager) DeregisterAgent(ctx context.Context, agentID, customerID string) error {
+	am.mutex.Lock()
+	defer am.mutex.Unlock()
+
+	if agent, exists := am.connections[agentID]; exists {
+		if agent.CustomerID != customerID {
+			return fmt.Errorf("unauthorized deregistration attempt")
+		}
+
+		// Close the connection
+		if err := agent.Connection.Close(); err != nil {
+			return fmt.Errorf("error closing connection: %w", err)
+		}
+
+		// Remove from connections map
+		delete(am.connections, agentID)
+		return nil
+	}
+
+	return fmt.Errorf("agent not found")
+}
+
+func (am *AgentManager) GetAgentMetrics(ctx context.Context, agentID string) (*AgentMetrics, error) {
+	am.mutex.RLock()
+	defer am.mutex.RUnlock()
+
+	agent, exists := am.connections[agentID]
+	if !exists {
+		return nil, fmt.Errorf("agent not found")
+	}
+
+	// In a real implementation, you would collect these metrics from the agent
+	metrics := &AgentMetrics{
+		Uptime:      time.Since(agent.LastPing).Seconds(),
+		MemoryUsage: 0, // Implement actual memory usage collection
+		CPUUsage:    0, // Implement actual CPU usage collection
+		LastUpdated: time.Now(),
+	}
+
+	return metrics, nil
+}
+
+func (am *AgentManager) GetConfigUpdate(agentID string) *models.AgentConfig {
+	am.mutex.RLock()
+	defer am.mutex.RUnlock()
+
+	agent, exists := am.connections[agentID]
+	if !exists {
+		return nil
+	}
+
+	// Return any pending configuration updates
+	return am.getAgentConfig(agent.CustomerID)
+}
+
+func (am *AgentManager) HandleProxyRequest(ctx context.Context, req *models.ProxyRequest) (*models.ProxyResponse, error) {
+	am.mutex.RLock()
+	agent, exists := am.connections[req.AgentID]
+	am.mutex.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("agent not found")
+	}
+
+	// Create proxy request
+	proxyReq := &ProxyRequest{
+		Method:     req.Method,
+		Path:       req.Path,
+		Headers:    convertHeaders(req.Headers), // Convert map[string]string to map[string][]string
+		Body:       req.Body,
+		CustomerID: agent.CustomerID,
+	}
+
+	// Use the connection to send the request
+	proxyResp, err := agent.sendRequest(proxyReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to proxy request: %w", err)
+	}
+
+	// Convert to models.ProxyResponse
+	response := &models.ProxyResponse{
+		RequestID:  req.RequestID,
+		StatusCode: proxyResp.StatusCode,
+		Headers:    convertHeadersBack(proxyResp.Headers),
+		Body:       proxyResp.Body,
+	}
+
+	am.logger.Info("Handling proxy request",
+		zap.String("agent_id", req.AgentID),
+		zap.String("path", req.Path),
+		zap.String("method", req.Method))
+
+	return response, nil
+}
+
+func (am *AgentManager) getAgentConfig(customerID string) *models.AgentConfig {
+	ctx := context.Background()
+
+	// Try to get from cache first
+	cacheKey := fmt.Sprintf(configCacheKey, customerID)
+
+	// Using the generic Get method since we're working with the Cache interface
+	configData, err := (*am.cache).Get(ctx, cacheKey)
+	if err == nil {
+		var config models.AgentConfig
+		if err := json.Unmarshal([]byte(configData), &config); err == nil {
+			return &config
+		}
+	}
+
+	// If not in cache or error occurred, create default configuration
+	config := &models.AgentConfig{
+		CustomerID:        customerID,
+		MaxConnections:    100,
+		RequestTimeout:    30 * time.Second,
+		RetryAttempts:     3,
+		RetryDelay:        5 * time.Second,
+		HeartbeatInterval: 30 * time.Second,
+		Features: models.AgentFeatures{
+			EnableCompression: true,
+			EnableCaching:     true,
+			EnableMetrics:     true,
+		},
+		Security: models.SecurityConfig{
+			EnableTLS:      true,
+			MinTLSVersion:  "1.2",
+			AllowedOrigins: []string{"*"},
+			RateLimit: models.RateLimitConfig{
+				Enabled:    true,
+				Requests:   1000,
+				TimeWindow: time.Minute,
+			},
+		},
+		Routes: []models.RouteConfig{
+			{
+				Path:         "/**",
+				Methods:      []string{"GET", "POST", "PUT", "DELETE"},
+				RateLimit:    1000,
+				Timeout:      30 * time.Second,
+				CacheEnabled: true,
+				CacheTTL:     5 * time.Minute,
+			},
+		},
+		Monitoring: models.MonitoringConfig{
+			MetricsInterval: 30 * time.Second,
+			LogLevel:        "info",
+			EnableTracing:   true,
+			SamplingRate:    0.1,
+		},
+	}
+
+	// Store in cache for future use
+	if configData, err := json.Marshal(config); err == nil {
+		err = (*am.cache).Set(ctx, cacheKey, string(configData), configTTL)
+		if err != nil {
+			am.logger.Error("Failed to cache agent config",
+				zap.Error(err),
+				zap.String("customer_id", customerID))
+		}
+	}
+
+	return config
+}
+
+// Add this helper function
+func convertHeaders(headers map[string]string) map[string][]string {
+	result := make(map[string][]string)
+	for k, v := range headers {
+		result[k] = []string{v}
+	}
+	return result
+}
+
+// Add this helper function at the bottom of the file
+func convertHeadersBack(headers map[string][]string) map[string]string {
+	result := make(map[string]string)
+	for k, v := range headers {
+		if len(v) > 0 {
+			result[k] = v[0]
+		}
+	}
+	return result
+}
+
+
+
+=========================================
+File: ./internal/service/auth_service.go
+=========================================
+package service
+
+import (
+	"context"
+	"errors"
+	"path"
+	"proxy-service/internal/config"
+	"proxy-service/internal/models"
+	"proxy-service/internal/repository"
+	"proxy-service/pkg/cache"
+	"proxy-service/pkg/jwt"
+	"proxy-service/pkg/metrics"
+	"strings"
+	"time"
+)
+
+var (
+	ErrCustomerInactive = errors.New("customer is inactive")
+	ErrInvalidAPIKey    = errors.New("invalid API key")
+)
+
+type AuthService struct {
+	repo    *repository.AuthRepository
+	cache   *cache.RedisCache
+	config  *config.Config
+	metrics *metrics.MetricsCollector
+	jwtMgr  *jwt.JWTManager
+}
+
+func NewAuthService(repo *repository.AuthRepository, cache *cache.RedisCache, config *config.Config, metrics *metrics.MetricsCollector) (*AuthService, error) {
+	// Initialize JWT manager
+	jwtMgr, err := jwt.NewJWTManager(config.JWT.Secret, "", "proxy-service") // Empty string for public key as we're using HMAC
+	if err != nil {
+		return nil, err
+	}
+
+	return &AuthService{
+		repo:    repo,
+		cache:   cache,
+		config:  config,
+		metrics: metrics,
+		jwtMgr:  jwtMgr,
+	}, nil
+}
+
+// Add the GenerateToken method
+func (s *AuthService) GenerateToken(ctx context.Context, apiKey string) (*models.AuthResponse, error) {
+	// Get customer by API key
+	customer, err := s.repo.GetCustomerByAPIKey(ctx, apiKey)
+	if err != nil {
+		return nil, ErrInvalidAPIKey
+	}
+
+	// Check if customer is active
+	if customer.Status != "active" {
+		return nil, ErrCustomerInactive
+	}
+
+	// Generate token duration
+	duration := time.Duration(s.config.JWT.ExpirationHours) * time.Hour
+
+	// Generate JWT token
+	token, err := s.jwtMgr.GenerateToken(customer.ID, customer.AllowedRoutes, duration)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create response
+	response := &models.AuthResponse{
+		Token:     token,
+		ExpiresIn: s.config.JWT.ExpirationHours * 3600, // Convert hours to seconds
+	}
+
+	return response, nil
+}
+
+func (s *AuthService) VerifyToken(ctx context.Context, token string) (*jwt.Claims, error) {
+	// Try cache first
+	if claims, err := s.cache.GetTokenClaims(ctx, token); err == nil {
+		return claims, nil
+	}
+
+	// Validate token
+	claims, err := s.jwtMgr.ValidateToken(token)
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify customer exists and is active
+	customer, err := s.repo.GetCustomer(ctx, claims.CustomerID)
+	if err != nil {
+		return nil, err
+	}
+
+	if customer.Status != "active" {
+		return nil, ErrCustomerInactive
+	}
+
+	// Cache validated token
+	s.cache.SetTokenClaims(ctx, token, claims, time.Until(time.Now().Add(time.Duration(s.config.JWT.ExpirationHours)*time.Hour)))
+
+	return claims, nil
+}
+
+func (s *AuthService) IsRouteAllowed(ctx context.Context, customerID, route string) bool {
+	// Check route permissions in cache first
+	if allowed, exists := s.cache.GetRoutePermission(ctx, customerID, route); exists {
+		return allowed
+	}
+
+	// Get customer routes from database
+	customer, err := s.repo.GetCustomer(context.Background(), customerID)
+	if err != nil {
+		return false
+	}
+
+	// Check if route is allowed
+	allowed := false
+	for _, allowedRoute := range customer.AllowedRoutes {
+		if matchRoute(allowedRoute, route) {
+			allowed = true
+			break
+		}
+	}
+
+	// Cache the result
+	s.cache.SetRoutePermission(ctx, customerID, route, allowed, time.Hour)
+
+	return allowed
+}
+
+func matchRoute(pattern, route string) bool {
+	// Convert pattern and route to path format
+	pattern = path.Clean("/" + pattern)
+	route = path.Clean("/" + route)
+
+	// Split into segments
+	patternParts := strings.Split(pattern, "/")
+	routeParts := strings.Split(route, "/")
+
+	// If lengths don't match and pattern doesn't end with /**
+	if len(patternParts) != len(routeParts) && !strings.HasSuffix(pattern, "/**") {
+		return false
+	}
+
+	// Compare each segment
+	for i, patternPart := range patternParts {
+		if i >= len(routeParts) {
+			return false
+		}
+
+		// Handle wildcards
+		switch patternPart {
+		case "*":
+			continue
+		case "**":
+			return true
+		default:
+			if patternPart != routeParts[i] {
+				return false
+			}
+		}
+	}
+
+	return len(routeParts) == len(patternParts)
+}
+
+
+
+=========================================
+File: ./internal/service/metrics_service.go
+=========================================
+package service
+
+import (
+	"context"
+	"proxy-service/internal/models"
+	"proxy-service/internal/repository"
+	"proxy-service/pkg/metrics"
+	"time"
+)
+
+type MetricsService struct {
+	repo      *repository.MetricsRepository
+	collector *metrics.MetricsCollector
+}
+
+func NewMetricsService(repo *repository.MetricsRepository, collector *metrics.MetricsCollector) *MetricsService {
+	return &MetricsService{
+		repo:      repo,
+		collector: collector,
+	}
+}
+
+func (s *MetricsService) RecordMetric(ctx context.Context, metric *models.MetricData) error {
+	// Save to database
+	if err := s.repo.SaveMetric(ctx, metric); err != nil {
+		return err
+	}
+
+	// Update real-time metrics
+	s.collector.RecordRequest(metric.CustomerID, metric.Path, metric.Method, float64(metric.Latency))
+	return nil
+}
+
+func (s *MetricsService) GetAggregatedMetrics(ctx context.Context, customerID string, duration time.Duration) (*models.AggregatedMetrics, error) {
+	startTime := time.Now().Add(-duration)
+	return s.repo.GetAggregatedMetrics(ctx, customerID, startTime)
+}
+
+func (s *MetricsService) GetMetrics(ctx context.Context, customerID string) (*models.MetricsResponse, error) {
+	// Get metrics for the last hour by default
+	endTime := time.Now()
+	startTime := endTime.Add(-1 * time.Hour)
+
+	// Get aggregated metrics from repository
+	aggregatedMetrics, err := s.repo.GetAggregatedMetrics(ctx, customerID, startTime)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get current metrics from collector
+	currentMetrics := s.collector.GetCurrentMetrics(customerID)
+
+	// Combine the metrics into a response
+	response := &models.MetricsResponse{
+		CustomerID: customerID,
+		TimeRange: models.TimeRange{
+			Start: startTime,
+			End:   endTime,
+		},
+		Aggregated: *aggregatedMetrics,
+		Current:    currentMetrics,
+	}
+
+	return response, nil
+}
+
+func (s *MetricsService) GetCollector() *metrics.MetricsCollector {
+	return s.collector
+}
+
+
+
+=========================================
+File: ./internal/service/proxy_service.go
+=========================================
+package service
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"proxy-service/internal/models"
+	"proxy-service/internal/service/agent"
+	"proxy-service/pkg/cache"
+	"proxy-service/pkg/metrics"
+	"sync"
+	"time"
+)
+
+type ProxyService struct {
+	agentManager *agent.AgentManager
+	cache        *cache.RedisCache
+	metrics      *metrics.MetricsCollector
+	routingTable map[string]string // customerID -> agentID
+	routingMutex sync.RWMutex
+}
+
+type ProxyRequest struct {
+	Method     string
+	Path       string
+	Headers    http.Header
+	Body       []byte
+	CustomerID string
+}
+
+type ProxyResponse struct {
+	StatusCode int
+	Headers    http.Header
+	Body       []byte
+}
+
+func NewProxyService(
+	agentManager *agent.AgentManager,
+	cache *cache.RedisCache,
+	metrics *metrics.MetricsCollector,
+) *ProxyService {
+	service := &ProxyService{
+		agentManager: agentManager,
+		cache:        cache,
+		metrics:      metrics,
+		routingTable: make(map[string]string),
+	}
+
+	// Start routing table maintenance
+	go service.maintainRoutingTable()
+
+	return service
+}
+
+func (s *ProxyService) ForwardRequest(ctx context.Context, req *http.Request) (*http.Response, error) {
+	startTime := time.Now()
+	customerID := ctx.Value("customer_id").(string)
+
+	// Get proxy configuration
+	_, err := s.getProxyConfig(ctx, customerID)
+	if err != nil {
+		s.metrics.RecordError(customerID, "config_error")
+		return nil, fmt.Errorf("failed to get proxy config: %w", err)
+	}
+
+	// Get agent ID for the customer
+	agentID, err := s.getAgentForCustomer(customerID)
+	if err != nil {
+		s.metrics.RecordError(customerID, "routing_error")
+		return nil, fmt.Errorf("failed to get agent: %w", err)
+	}
+
+	// Create proxy request
+	proxyReq := &agent.ProxyRequest{
+		Method:     req.Method,
+		Path:       req.URL.Path,
+		Headers:    req.Header,
+		CustomerID: customerID,
+	}
+
+	// Forward request through agent
+	response, err := s.agentManager.RouteRequest(ctx, agentID, proxyReq)
+	if err != nil {
+		s.metrics.RecordError(customerID, "forward_error")
+		return nil, fmt.Errorf("failed to forward request: %w", err)
+	}
+
+	// Record metrics
+	s.metrics.RecordRequestDuration(customerID, req.URL.Path, req.Method, time.Since(startTime))
+
+	// Convert agent.ProxyResponse to ProxyResponse
+	localResponse := &ProxyResponse{
+		StatusCode: response.StatusCode,
+		Headers:    response.Headers,
+		Body:       response.Body,
+	}
+
+	return s.createHTTPResponse(localResponse), nil
+}
+
+func (s *ProxyService) getProxyConfig(ctx context.Context, customerID string) (*models.ProxyConfig, error) {
+	// Try cache first
+	if config, err := s.cache.GetProxyConfig(ctx, customerID); err == nil {
+		return config, nil
+	}
+
+	// Config not in cache, return error
+	return nil, fmt.Errorf("proxy configuration not found")
+}
+
+func (s *ProxyService) getAgentForCustomer(customerID string) (string, error) {
+	s.routingMutex.RLock()
+	agentID, exists := s.routingTable[customerID]
+	s.routingMutex.RUnlock()
+
+	if !exists {
+		return "", fmt.Errorf("no agent found for customer")
+	}
+
+	return agentID, nil
+}
+
+func (s *ProxyService) maintainRoutingTable() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.updateRoutingTable()
+		}
+	}
+}
+
+func (s *ProxyService) updateRoutingTable() {
+	// Get all active agents
+	agents := s.agentManager.GetActiveAgents()
+
+	s.routingMutex.Lock()
+	defer s.routingMutex.Unlock()
+
+	// Clear current routing table
+	s.routingTable = make(map[string]string)
+
+	// Update routing table based on active agents
+	for _, agent := range agents {
+		s.routingTable[agent.CustomerID] = agent.AgentID
+	}
+}
+
+func (s *ProxyService) createHTTPResponse(proxyResp *ProxyResponse) *http.Response {
+	return &http.Response{
+		StatusCode: proxyResp.StatusCode,
+		Header:     proxyResp.Headers,
+		Body:       http.NoBody,
+	}
+}
+
+
+
+=========================================
+File: ./internal/service/services.go
+=========================================
+package service
+
+import (
+	"proxy-service/internal/config"
+	"proxy-service/internal/repository"
+	"proxy-service/internal/service/agent"
+	"proxy-service/pkg/cache"
+	"proxy-service/pkg/cloudflare"
+	"proxy-service/pkg/database"
+	"proxy-service/pkg/metrics"
+)
+
+type Services struct {
+	Auth    *AuthService
+	Proxy   *ProxyService
+	Metrics *MetricsService
+}
+
+type Deps struct {
+	Config       *config.Config
+	DB           *database.MongoDB
+	Cache        *cache.RedisCache
+	Metrics      *metrics.MetricsCollector
+	TunnelClient *cloudflare.TunnelClient
+	cache        *cache.Cache
+}
+
+func NewServices(deps Deps) *Services {
+	db := deps.DB.Database()
+
+	authRepo := repository.NewAuthRepository(db, deps.Cache)
+	// proxyRepo := repository.NewProxyRepository(db, deps.Cache)
+	metricsRepo := repository.NewMetricsRepository(db)
+
+	agentManager := agent.NewAgentManager(deps.Metrics, deps.cache)
+
+	authService, _ := NewAuthService(authRepo, deps.Cache, deps.Config, deps.Metrics)
+	proxyService := NewProxyService(agentManager, deps.Cache, deps.Metrics)
+	metricsService := NewMetricsService(metricsRepo, deps.Metrics)
+
+	return &Services{
+		Auth:    authService,
+		Proxy:   proxyService,
+		Metrics: metricsService,
+	}
+}
+
+
+
+=========================================
+File: ./Makefile
+=========================================
+# Makefile
+
+# Build variables
+BINARY_NAME=proxy-service
+VERSION := $(shell git describe --tags --always --dirty)
+BUILD_TIME := $(shell date -u '+%Y-%m-%d_%H:%M:%S')
+LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.buildTime=$(BUILD_TIME)"
+
+
+
+# Go parameters
+GOCMD=go
+GOBUILD=$(GOCMD) build
+GOTEST=$(GOCMD) test
+GOMOD=$(GOCMD) mod
+GOGET=$(GOCMD) get
+GORUN=$(GOCMD) run
+
+# Docker parameters
+DOCKER_COMPOSE=docker-compose
+DOCKER_BUILD=docker build
+
+# Kubernetes parameters
+KUBECTL=kubectl
+
+# Build flags
+LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME) -X main.CommitHash=$(COMMIT_HASH)"
+
+# Environment variables
+export CGO_ENABLED=0
+export GOOS=linux
+export GOARCH=amd64
+
+.PHONY: all build clean test coverage deps lint docker-build docker-run k8s-deploy
+
+# Default target
+all: clean build test
+
+# Build the application
+build:
+    go build $(LDFLAGS) -o bin/proxy-service ./cmd/proxy-service
+# build:
+# 	@echo "Building $(BINARY_NAME)..."
+# 	$(GOBUILD) $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/proxy-service
+
+# Clean build artifacts
+clean:
+	@echo "Cleaning..."
+	rm -rf bin/
+	rm -f coverage.*
+	$(DOCKER_COMPOSE) down -v
+
+# Run tests
+test:
+	@echo "Running tests..."
+	$(GOTEST) -v -race ./...
+
+# Generate test coverage
+coverage:
+	@echo "Generating test coverage..."
+	$(GOTEST) -coverprofile=coverage.out ./...
+	$(GOCMD) tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report generated at coverage.html"
+
+# Download dependencies
+deps:
+	@echo "Downloading dependencies..."
+	$(GOMOD) download
+	$(GOMOD) verify
+
+# Run linter
+lint:
+	@echo "Running linter..."
+	golangci-lint run
+
+# Generate certificates
+generate-certs:
+	@echo "Generating certificates..."
+	mkdir -p cert
+	openssl req -x509 -newkey rsa:4096 \
+		-keyout cert/server.key \
+		-out cert/server.crt \
+		-days 365 -nodes \
+		-subj "/CN=proxy-service"
+
+# Docker targets
+docker-build:
+	@echo "Building Docker image..."
+	$(DOCKER_BUILD) -t $(BINARY_NAME):$(VERSION) \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		--build-arg COMMIT_HASH=$(COMMIT_HASH) \
+		-f deployment/docker/Dockerfile .
+
+docker-run:
+	@echo "Starting Docker containers..."
+	$(DOCKER_COMPOSE) up -d
+
+docker-stop:
+	@echo "Stopping Docker containers..."
+	$(DOCKER_COMPOSE) down
+
+docker-logs:
+	@echo "Showing Docker logs..."
+	$(DOCKER_COMPOSE) logs -f
+
+# Development targets
+dev: docker-run
+	@echo "Starting development environment..."
+	air -c .air.toml
+
+# Kubernetes targets
+k8s-deploy:
+	@echo "Deploying to Kubernetes..."
+	$(KUBECTL) apply -f deployment/kubernetes/
+
+k8s-delete:
+	@echo "Removing from Kubernetes..."
+	$(KUBECTL) delete -f deployment/kubernetes/
+
+k8s-logs:
+	@echo "Showing Kubernetes logs..."
+	$(KUBECTL) logs -f deployment/$(BINARY_NAME)
+
+# Monitoring setup
+setup-monitoring:
+	@echo "Setting up monitoring..."
+	./scripts/monitoring-setup.sh
+
+# Database targets
+db-migrate:
+	@echo "Running database migrations..."
+	$(GORUN) cmd/migrate/main.go
+
+db-seed:
+	@echo "Seeding database..."
+	$(GORUN) cmd/seed/main.go
+
+# Help target
+help:
+	@echo "Available targets:"
+	@echo "  build          - Build the application"
+	@echo "  clean          - Clean build artifacts"
+	@echo "  test           - Run tests"
+	@echo "  coverage       - Generate test coverage report"
+	@echo "  deps           - Download dependencies"
+	@echo "  lint           - Run linter"
+	@echo "  docker-build   - Build Docker image"
+	@echo "  docker-run     - Start Docker containers"
+	@echo "  docker-stop    - Stop Docker containers"
+	@echo "  docker-logs    - Show Docker logs"
+	@echo "  dev            - Start development environment"
+	@echo "  k8s-deploy     - Deploy to Kubernetes"
+	@echo "  k8s-delete     - Remove from Kubernetes"
+	@echo "  k8s-logs       - Show Kubernetes logs"
+	@echo "  db-migrate     - Run database migrations"
+	@echo "  db-seed        - Seed database"
+
+
+=========================================
+File: ./pkg/cache/cache.go
+=========================================
+package cache
+
+import (
+	"context"
+	"proxy-service/internal/models"
+	"proxy-service/pkg/jwt"
+	"time"
+)
+
+type Cache interface {
+	Set(ctx context.Context, key string, value string, expiration time.Duration) error
+	Get(ctx context.Context, key string) (string, error)
+	Delete(ctx context.Context, key string) error
+	GetCustomer(ctx context.Context, key string) (*models.Customer, error)
+	SetCustomer(ctx context.Context, key string, customer *models.Customer, expiration time.Duration) error
+	GetProxyConfig(ctx context.Context, key string) (*models.ProxyConfig, error)
+	SetProxyConfig(ctx context.Context, key string, config *models.ProxyConfig, expiration time.Duration) error
+	GetTokenClaims(ctx context.Context, token string) (*jwt.Claims, error)
+	SetTokenClaims(ctx context.Context, token string, claims *jwt.Claims, expiration time.Duration) error
+	GetRoutePermission(ctx context.Context, customerID, route string) (bool, bool)
+	SetRoutePermission(ctx context.Context, customerID, route string, allowed bool, expiration time.Duration) error
+}
+
+
+
+=========================================
+File: ./pkg/cache/redis.go
+=========================================
+package cache
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"proxy-service/internal/config"
+	"proxy-service/internal/models"
+	"proxy-service/pkg/jwt"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+)
+
+type RedisCache struct {
+	client *redis.Client
+}
+
+func NewRedisCache(cfg *config.RedisConfig) (*RedisCache, error) {
+	client := redis.NewClient(&redis.Options{
+		Addr:         cfg.Address,
+		Password:     cfg.Password,
+		DB:           cfg.DB,
+		PoolSize:     cfg.PoolSize,
+		MinIdleConns: cfg.MinIdleConns,
+		MaxRetries:   cfg.MaxRetries,
+	})
+
+	// Test connection
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := client.Ping(ctx).Err(); err != nil {
+		return nil, err
+	}
+
+	return &RedisCache{client: client}, nil
+}
+
+func (c *RedisCache) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return c.client.Set(ctx, key, data, expiration).Err()
+}
+
+func (c *RedisCache) Get(ctx context.Context, key string) (string, error) {
+	return c.client.Get(ctx, key).Result()
+}
+
+func (c *RedisCache) Delete(ctx context.Context, key string) error {
+	return c.client.Del(ctx, key).Err()
+}
+
+func (c *RedisCache) GetCustomer(ctx context.Context, key string) (*models.Customer, error) {
+	data, err := c.client.Get(ctx, "customer:"+key).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	var customer models.Customer
+	if err := json.Unmarshal([]byte(data), &customer); err != nil {
+		return nil, err
+	}
+
+	return &customer, nil
+}
+
+func (c *RedisCache) SetCustomer(ctx context.Context, key string, customer *models.Customer, expiration time.Duration) error {
+	data, err := json.Marshal(customer)
+	if err != nil {
+		return err
+	}
+
+	return c.client.Set(ctx, "customer:"+key, data, expiration).Err()
+}
+
+func (c *RedisCache) GetProxyConfig(ctx context.Context, customerID string) (*models.ProxyConfig, error) {
+	data, err := c.client.Get(ctx, "proxy_config:"+customerID).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	var config models.ProxyConfig
+	if err := json.Unmarshal([]byte(data), &config); err != nil {
+		return nil, err
+	}
+
+	return &config, nil
+}
+
+func (c *RedisCache) SetProxyConfig(ctx context.Context, customerID string, config *models.ProxyConfig, expiration time.Duration) error {
+	data, err := json.Marshal(config)
+	if err != nil {
+		return err
+	}
+
+	return c.client.Set(ctx, "proxy_config:"+customerID, data, expiration).Err()
+}
+
+func (c *RedisCache) GetTokenClaims(ctx context.Context, token string) (*jwt.Claims, error) {
+	data, err := c.client.Get(ctx, "token:"+token).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	var claims jwt.Claims
+	if err := json.Unmarshal([]byte(data), &claims); err != nil {
+		return nil, err
+	}
+
+	return &claims, nil
+}
+
+func (c *RedisCache) SetTokenClaims(ctx context.Context, token string, claims *jwt.Claims, expiration time.Duration) error {
+	data, err := json.Marshal(claims)
+	if err != nil {
+		return err
+	}
+	return c.client.Set(ctx, "token:"+token, data, expiration).Err()
+}
+
+func (c *RedisCache) GetRoutePermission(ctx context.Context, customerID, route string) (bool, bool) {
+	key := fmt.Sprintf("route_permission:%s:%s", customerID, route)
+	val, err := c.client.Get(ctx, key).Result()
+	if err != nil {
+		return false, false
+	}
+	return val == "true", true
+}
+
+func (c *RedisCache) SetRoutePermission(ctx context.Context, customerID, route string, allowed bool, expiration time.Duration) error {
+	key := fmt.Sprintf("route_permission:%s:%s", customerID, route)
+	value := "false"
+	if allowed {
+		value = "true"
+	}
+	return c.client.Set(ctx, key, value, expiration).Err()
+}
+
+func (c *RedisCache) GetAgentConfig(ctx context.Context, key string) (*models.AgentConfig, error) {
+	data, err := c.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+
+	var config models.AgentConfig
+	if err := json.Unmarshal([]byte(data), &config); err != nil {
+		return nil, err
+	}
+
+	return &config, nil
+}
+
+func (c *RedisCache) SetAgentConfig(ctx context.Context, key string, config *models.AgentConfig, expiration time.Duration) error {
+	data, err := json.Marshal(config)
+	if err != nil {
+		return err
+	}
+
+	return c.Set(ctx, key, string(data), expiration)
+}
+
+
+
+=========================================
+File: ./pkg/circuitbreaker/circuit_breaker.go
+=========================================
+package circuitbreaker
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+)
+
+// CircuitBreaker errors
+var (
+	ErrCircuitOpen = fmt.Errorf("circuit breaker is open")
+)
+
+// Additional helper types and constants
+type State string
+
+const (
+	StateClosed   State = "closed"
+	StateOpen     State = "open"
+	StateHalfOpen State = "half-open"
+)
+
+// CircuitBreakerConfig holds configuration for circuit breaker
+type CircuitBreakerConfig struct {
+	MaxFailures   int
+	Timeout       time.Duration
+	OnStateChange func(from, to State)
+}
+
+type CircuitBreaker struct {
+	mutex       sync.RWMutex
+	failures    int
+	lastFailure time.Time
+	state       string // closed, open, half-open
+	maxFailures int
+	timeout     time.Duration
+}
+
+func NewCircuitBreaker(maxFailures int, timeout time.Duration) *CircuitBreaker {
+	return &CircuitBreaker{
+		state:       "closed",
+		maxFailures: maxFailures,
+		timeout:     timeout,
+	}
+}
+
+func (cb *CircuitBreaker) Execute(ctx context.Context, cmd func() error) error {
+	cb.mutex.RLock()
+	if cb.state == "open" {
+		if time.Since(cb.lastFailure) > cb.timeout {
+			cb.mutex.RUnlock()
+			cb.mutex.Lock()
+			cb.state = "half-open"
+			cb.mutex.Unlock()
+		} else {
+			cb.mutex.RUnlock()
+			return ErrCircuitOpen
+		}
+	} else {
+		cb.mutex.RUnlock()
+	}
+
+	err := cmd()
+
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+
+	if err != nil {
+		cb.failures++
+		cb.lastFailure = time.Now()
+
+		if cb.failures >= cb.maxFailures {
+			cb.state = "open"
+		}
+		return err
+	}
+
+	if cb.state == "half-open" {
+		cb.state = "closed"
+	}
+	cb.failures = 0
+	return nil
+}
+
+// New creates a new circuit breaker with the given configuration
+func New(config CircuitBreakerConfig) *CircuitBreaker {
+	return &CircuitBreaker{
+		state:       string(StateClosed),
+		maxFailures: config.MaxFailures,
+		timeout:     config.Timeout,
+	}
+}
+
+// GetState returns the current state of the circuit breaker
+func (cb *CircuitBreaker) GetState() State {
+	cb.mutex.RLock()
+	defer cb.mutex.RUnlock()
+	return State(cb.state)
+}
+
+
+
+=========================================
+File: ./pkg/cloudflare/tunnel.go
+=========================================
+package cloudflare
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"net/http"
+	"sync"
+	"time"
+
+	"proxy-service/pkg/logger"
+
+	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
+)
+
+type TunnelConfig struct {
+	ID                string
+	Token             string
+	CustomerID        string
+	TargetURL         string
+	HeartbeatInterval time.Duration
+	RetryInterval     time.Duration
+}
+
+type TunnelState struct {
+	Status      string
+	LastHealthy time.Time
+	Errors      int
+	mutex       sync.RWMutex
+}
+
+type TunnelClient struct {
+	config     TunnelConfig
+	state      TunnelState
+	connection *websocket.Conn
+	httpClient *http.Client
+	logger     *logger.Logger
+	done       chan struct{}
+}
+
+func NewTunnelClient(config TunnelConfig, logger *logger.Logger) *TunnelClient {
+	return &TunnelClient{
+		config: config,
+		httpClient: &http.Client{
+			Timeout: time.Second * 30,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+				},
+				MaxIdleConns:       100,
+				IdleConnTimeout:    90 * time.Second,
+				DisableCompression: true,
+			},
+		},
+		logger: logger,
+		done:   make(chan struct{}),
+	}
+}
+
+func (c *TunnelClient) Start(ctx context.Context) error {
+	if err := c.connect(ctx); err != nil {
+		return err
+	}
+
+	go c.healthCheck()
+	go c.handleMessages()
+
+	return nil
+}
+
+func (c *TunnelClient) handleHealthCheckFailure(err error) {
+	c.logger.Error("health check failed", zap.Error(err))
+	c.state.mutex.Lock()
+	c.state.Status = "error"
+	c.state.Errors++
+	c.state.mutex.Unlock()
+
+	if c.state.Errors > 3 {
+		c.reconnect()
+	}
+}
+
+func (c *TunnelClient) processMessage(messageType int, message []byte) error {
+	// Add your message processing logic here
+	switch messageType {
+	case websocket.TextMessage:
+		c.logger.Debug("received text message", zap.ByteString("message", message))
+	case websocket.BinaryMessage:
+		c.logger.Debug("received binary message", zap.Int("size", len(message)))
+	}
+	return nil
+}
+
+func (c *TunnelClient) connect(ctx context.Context) error {
+	dialer := websocket.Dialer{
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+		HandshakeTimeout: 10 * time.Second,
+	}
+
+	// Connect to Cloudflare edge
+	conn, _, err := dialer.DialContext(ctx, c.config.TargetURL, http.Header{
+		"CF-Tunnel-Token": []string{c.config.Token},
+		"CF-Tunnel-ID":    []string{c.config.ID},
+	})
+	if err != nil {
+		return err
+	}
+
+	c.connection = conn
+	c.updateState("connected", nil)
+	return nil
+}
+
+func (c *TunnelClient) healthCheck() {
+	ticker := time.NewTicker(c.config.HeartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-ticker.C:
+			if err := c.sendHeartbeat(); err != nil {
+				c.handleHealthCheckFailure(err)
+			} else {
+				c.updateState("healthy", nil)
+			}
+		}
+	}
+}
+
+func (c *TunnelClient) sendHeartbeat() error {
+	message := struct {
+		Type      string    `json:"type"`
+		Timestamp time.Time `json:"timestamp"`
+	}{
+		Type:      "heartbeat",
+		Timestamp: time.Now(),
+	}
+
+	return c.connection.WriteJSON(message)
+}
+
+func (c *TunnelClient) handleMessages() {
+	for {
+		select {
+		case <-c.done:
+			return
+		default:
+			messageType, message, err := c.connection.ReadMessage()
+			if err != nil {
+				c.handleConnectionError(err)
+				return
+			}
+
+			if err := c.processMessage(messageType, message); err != nil {
+				c.logger.Error("failed to process message", zap.Error(err))
+			}
+		}
+	}
+}
+
+func (c *TunnelClient) handleConnectionError(err error) {
+	c.updateState("error", err)
+	c.reconnect()
+}
+
+func (c *TunnelClient) reconnect() {
+	backoff := time.Second
+
+	for {
+		select {
+		case <-c.done:
+			return
+		default:
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := c.connect(ctx); err == nil {
+				cancel()
+				return
+			}
+			cancel()
+
+			// Exponential backoff
+			time.Sleep(backoff)
+			backoff *= 2
+			if backoff > time.Minute*5 {
+				backoff = time.Minute * 5
+			}
+		}
+	}
+}
+
+func (c *TunnelClient) updateState(status string, err error) {
+	c.state.mutex.Lock()
+	defer c.state.mutex.Unlock()
+
+	c.state.Status = status
+	if err == nil {
+		c.state.LastHealthy = time.Now()
+		c.state.Errors = 0
+	} else {
+		c.state.Errors++
+	}
+}
+
+func (c *TunnelClient) ForwardRequest(ctx context.Context, req *http.Request) (*http.Response, error) {
+	if c.state.Status != "healthy" {
+		return nil, fmt.Errorf("tunnel not healthy")
+	}
+
+	// Clone and modify the request
+	proxyReq := req.Clone(ctx)
+	proxyReq.RequestURI = ""
+
+	// Add tunnel headers
+	proxyReq.Header.Set("CF-Tunnel-ID", c.config.ID)
+	proxyReq.Header.Set("CF-Customer-ID", c.config.CustomerID)
+
+	return c.httpClient.Do(proxyReq)
+}
+
+func (c *TunnelClient) Stop() error {
+	close(c.done)
+	if c.connection != nil {
+		return c.connection.Close()
+	}
+	return nil
+}
+
+
+
+=========================================
+File: ./pkg/database/mongodb.go
+=========================================
+package database
+
+import (
+	"context"
+	"fmt"
+	"proxy-service/internal/config"
+	"time"
+
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+type MongoDB struct {
+	client *mongo.Client
+	db     *mongo.Database
+}
+
+func NewMongoDB(cfg *config.MongoDBConfig) (*MongoDB, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Create client options
+	clientOptions := options.Client().
+		ApplyURI(cfg.URI).
+		SetMaxPoolSize(uint64(cfg.PoolSize)).
+		SetMinPoolSize(10).
+		SetMaxConnIdleTime(time.Duration(cfg.Timeout) * time.Second)
+
+	// Connect to MongoDB
+	client, err := mongo.Connect(ctx, clientOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to mongodb: %w", err)
+	}
+
+	// Ping database to verify connection
+	if err = client.Ping(ctx, nil); err != nil {
+		return nil, fmt.Errorf("failed to ping mongodb: %w", err)
+	}
+
+	return &MongoDB{
+		client: client,
+		db:     client.Database(cfg.Database),
+	}, nil
+}
+
+func (m *MongoDB) Collection(name string) *mongo.Collection {
+	return m.db.Collection(name)
+}
+
+func (m *MongoDB) Database() *mongo.Database {
+	return m.db
+}
+
+func (m *MongoDB) Close(ctx context.Context) error {
+	return m.client.Disconnect(ctx)
+}
+
+
+
+=========================================
+File: ./pkg/jwt/jwt.go
+=========================================
+package jwt
+
+import (
+	"crypto/rsa"
+	"fmt"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+)
+
+type Claims struct {
+	CustomerID    string   `json:"customer_id"`
+	AllowedRoutes []string `json:"allowed_routes"`
+	TokenType     string   `json:"token_type"`
+	jwt.RegisteredClaims
+}
+
+// Add RSA key support for better security
+type JWTManager struct {
+	privateKey *rsa.PrivateKey
+	publicKey  *rsa.PublicKey
+	issuer     string
+}
+
+func NewJWTManager(privateKeyPEM, publicKeyPEM, issuer string) (*JWTManager, error) {
+	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(privateKeyPEM))
+	if err != nil {
+		return nil, err
+	}
+
+	publicKey, err := jwt.ParseRSAPublicKeyFromPEM([]byte(publicKeyPEM))
+	if err != nil {
+		return nil, err
+	}
+
+	return &JWTManager{
+		privateKey: privateKey,
+		publicKey:  publicKey,
+		issuer:     issuer,
+	}, nil
+}
+
+func (m *JWTManager) GenerateToken(customerID string, allowedRoutes []string, duration time.Duration) (string, error) {
+	claims := Claims{
+		CustomerID:    customerID,
+		AllowedRoutes: allowedRoutes,
+		TokenType:     "access",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(duration)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+			Issuer:    m.issuer,
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	return token.SignedString(m.privateKey)
+}
+
+func (m *JWTManager) ValidateToken(tokenString string) (*Claims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		return m.publicKey, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
+		return claims, nil
+	}
+
+	return nil, jwt.ErrSignatureInvalid
+}
+
+func ValidateToken(tokenString string, secretKey string) (*Claims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(secretKey), nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
+		return claims, nil
+	}
+
+	return nil, fmt.Errorf("invalid token")
+}
+
+
+
+=========================================
+File: ./pkg/logger/logger.go
+=========================================
+// package logger
+
+// import (
+// 	"context"
+
+// 	"go.uber.org/zap"
+// 	"go.uber.org/zap/zapcore"
+// )
+
+// type Logger struct {
+// 	*zap.Logger
+// }
+
+// func NewLogger(cfg *config.LogConfig) (*Logger, error) {
+// 	config := zap.Config{
+// 		Level:            zap.NewAtomicLevelAt(getLogLevel(cfg.Level)),
+// 		Development:      false,
+// 		Encoding:         "json",
+// 		EncoderConfig:    zap.NewProductionEncoderConfig(),
+// 		OutputPaths:      []string{"stdout"},
+// 		ErrorOutputPaths: []string{"stderr"},
+// 	}
+
+// 	logger, err := config.Build()
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	return &Logger{logger}, nil
+// }
+
+// func (l *Logger) WithContext(ctx context.Context) *Logger {
+// 	if requestID, ok := ctx.Value("request_id").(string); ok {
+// 		return &Logger{l.With(zap.String("request_id", requestID))}
+// 	}
+// 	return l
+// }
+
+// func getLogLevel(level string) zapcore.Level {
+// 	switch level {
+// 	case "debug":
+// 		return zapcore.DebugLevel
+// 	case "info":
+// 		return zapcore.InfoLevel
+// 	case "warn":
+// 		return zapcore.WarnLevel
+// 	case "error":
+// 		return zapcore.ErrorLevel
+// 	default:
+// 		return zapcore.InfoLevel
+// 	}
+// }
+
+package logger
+
+import (
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+)
+
+var defaultLogger *Logger
+
+type Logger struct {
+	*zap.Logger
+}
+
+func NewLogger() *Logger {
+	config := zap.NewProductionConfig()
+	config.EncoderConfig.TimeKey = "timestamp"
+	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+
+	logger, err := config.Build()
+	if err != nil {
+		panic(err)
+	}
+
+	return &Logger{
+		Logger: logger,
+	}
+}
+
+func Info(msg string, fields ...interface{}) {
+	defaultLogger.Info(msg, fields...)
+}
+
+func Error(msg string, fields ...interface{}) {
+	sugar := defaultLogger.Logger.Sugar()
+	sugar.Errorw(msg, fields...)
+}
+
+func Fatal(msg string, fields ...interface{}) {
+	defaultLogger.Fatal(msg, fields...)
+}
+
+func (l *Logger) Info(msg string, args ...interface{}) {
+	l.Logger.Sugar().Infow(msg, args...)
+}
+
+func (l *Logger) Error(msg string, args ...interface{}) {
+	l.Logger.Sugar().Errorw(msg, args...)
+}
+
+func (l *Logger) Fatal(msg string, args ...interface{}) {
+	l.Logger.Sugar().Fatalw(msg, args...)
+}
+
+func Sync() error {
+	return defaultLogger.Logger.Sync()
+}
+
+
+
+=========================================
+File: ./pkg/metrics/collector.go
+=========================================
+package metrics
+
+import (
+	"strconv"
+	"time"
+
+	"proxy-service/internal/config"
+	"proxy-service/internal/models"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+type MetricsCollector struct {
+	requestCounter      *prometheus.CounterVec
+	requestDuration     *prometheus.HistogramVec
+	errorCounter        *prometheus.CounterVec
+	responseSize        *prometheus.HistogramVec
+	activeConnections   *prometheus.GaugeVec
+	authFailures        *prometheus.CounterVec
+	authSuccesses       *prometheus.CounterVec
+	authDuration        *prometheus.HistogramVec
+	agentConnections    *prometheus.GaugeVec
+	agentDisconnections *prometheus.CounterVec
+	agentRequestCounter *prometheus.CounterVec
+	agentErrors         *prometheus.CounterVec
+	agentLatency        *prometheus.HistogramVec
+	agentUptime         *prometheus.GaugeVec
+	agentMemoryUsage    *prometheus.GaugeVec
+	agentCPUUsage       *prometheus.GaugeVec
+}
+
+type ProxyHandler struct {
+	config  *config.ProxyConfig
+	metrics *MetricsCollector
+}
+
+func NewProxyHandler(config *config.ProxyConfig, metrics *MetricsCollector) *ProxyHandler {
+	return &ProxyHandler{
+		config:  config,
+		metrics: metrics,
+	}
+}
+
+func NewMetricsCollector() *MetricsCollector {
+	mc := &MetricsCollector{
+		// Existing metrics
+		requestCounter: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "proxy_requests_total",
+				Help: "Total number of HTTP requests processed",
+			},
+			[]string{"customer_id", "path", "method", "status"},
+		),
+		requestDuration: promauto.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "proxy_request_duration_seconds",
+				Help:    "HTTP request duration in seconds",
+				Buckets: prometheus.DefBuckets,
+			},
+			[]string{"customer_id", "path", "method"},
+		),
+		errorCounter: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "proxy_errors_total",
+				Help: "Total number of errors encountered",
+			},
+			[]string{"customer_id", "error_type"},
+		),
+		// Add new auth metrics
+		authFailures: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "proxy_auth_failures_total",
+				Help: "Total number of authentication failures",
+			},
+			[]string{"reason"},
+		),
+		authSuccesses: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "proxy_auth_successes_total",
+				Help: "Total number of successful authentications",
+			},
+			[]string{"type"},
+		),
+		authDuration: promauto.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "proxy_auth_duration_seconds",
+				Help:    "Authentication request duration in seconds",
+				Buckets: prometheus.DefBuckets,
+			},
+			[]string{"status"},
+		),
+		agentConnections: promauto.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "proxy_agent_connections",
+				Help: "Number of active agent connections",
+			},
+			[]string{"customer_id"},
+		),
+
+		agentDisconnections: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "proxy_agent_disconnections_total",
+				Help: "Total number of agent disconnections",
+			},
+			[]string{"customer_id", "reason"},
+		),
+
+		agentRequestCounter: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "proxy_agent_requests_total",
+				Help: "Total number of requests processed by agents",
+			},
+			[]string{"customer_id", "agent_id", "status"},
+		),
+
+		agentErrors: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "proxy_agent_errors_total",
+				Help: "Total number of agent errors",
+			},
+			[]string{"customer_id", "agent_id", "error_type"},
+		),
+
+		agentLatency: promauto.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "proxy_agent_request_duration_seconds",
+				Help:    "Agent request duration in seconds",
+				Buckets: prometheus.DefBuckets,
+			},
+			[]string{"customer_id", "agent_id"},
+		),
+
+		agentUptime: promauto.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "proxy_agent_uptime_seconds",
+				Help: "Agent uptime in seconds",
+			},
+			[]string{"customer_id", "agent_id"},
+		),
+
+		agentMemoryUsage: promauto.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "proxy_agent_memory_bytes",
+				Help: "Agent memory usage in bytes",
+			},
+			[]string{"customer_id", "agent_id"},
+		),
+
+		agentCPUUsage: promauto.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "proxy_agent_cpu_usage",
+				Help: "Agent CPU usage percentage",
+			},
+			[]string{"customer_id", "agent_id"},
+		),
+	}
+	return mc
+}
+
+// Add new auth-related methods
+func (c *MetricsCollector) RecordAuthFailure(reason string) {
+	c.authFailures.WithLabelValues(reason).Inc()
+}
+
+func (c *MetricsCollector) RecordAuthSuccess(authType string) {
+	c.authSuccesses.WithLabelValues(authType).Inc()
+}
+
+func (c *MetricsCollector) RecordAuthDuration(duration time.Duration) {
+	c.authDuration.WithLabelValues("success").Observe(duration.Seconds())
+}
+
+func (c *MetricsCollector) RecordRequestDuration(customerID, path, method string, duration time.Duration) {
+	c.requestDuration.WithLabelValues(customerID, path, method).Observe(duration.Seconds())
+}
+
+func (c *MetricsCollector) RecordRequestCount(customerID, path, method string, status int) {
+	c.requestCounter.WithLabelValues(customerID, path, method, strconv.Itoa(status)).Inc()
+}
+
+func (c *MetricsCollector) RecordResponseSize(customerID, path string, size float64) {
+	c.responseSize.WithLabelValues(customerID, path).Observe(size)
+}
+
+func (c *MetricsCollector) RecordError(customerID, errorType string) {
+	c.errorCounter.WithLabelValues(customerID, errorType).Inc()
+}
+
+func (c *MetricsCollector) UpdateActiveConnections(customerID string, count int) {
+	c.activeConnections.WithLabelValues(customerID).Set(float64(count))
+}
+
+func (c *MetricsCollector) GetCurrentMetrics(customerID string) models.CurrentMetrics {
+	var currentMetrics models.CurrentMetrics
+
+	// Use the underlying gauge vector directly
+	currentMetrics.ActiveConnections = int(getGaugeValue(c.activeConnections, customerID))
+
+	// Calculate request rate from counter
+	totalRequests := getCounterValue(c.requestCounter, customerID)
+	currentMetrics.RequestRate = totalRequests / 60.0 // requests per second
+
+	// Get average latency
+	latencySum := getHistogramValue(c.requestDuration, customerID)
+	if latencySum > 0 {
+		currentMetrics.AverageLatency = latencySum
+	}
+
+	// Calculate error rate
+	totalErrors := getCounterValue(c.errorCounter, customerID)
+	if totalRequests > 0 {
+		currentMetrics.ErrorRate = totalErrors / totalRequests
+	}
+
+	return currentMetrics
+}
+
+// Helper functions to get metric values
+func getGaugeValue(vec *prometheus.GaugeVec, customerID string) float64 {
+	// Get the metric value directly from the vector
+	metric, err := vec.GetMetricWithLabelValues(customerID)
+	if err != nil {
+		return 0
+	}
+	return float64(metric.(prometheus.Gauge).Desc().String()[0])
+}
+
+func getCounterValue(vec *prometheus.CounterVec, customerID string) float64 {
+	metric, err := vec.GetMetricWithLabelValues(customerID, "", "", "")
+	if err != nil {
+		return 0
+	}
+	return float64(metric.(prometheus.Counter).Desc().String()[0])
+}
+
+func getHistogramValue(vec *prometheus.HistogramVec, customerID string) float64 {
+	metric, err := vec.GetMetricWithLabelValues(customerID, "", "")
+	if err != nil {
+		return 0
+	}
+	return float64(metric.(prometheus.Histogram).Desc().String()[0])
+}
+
+func (c *MetricsCollector) RecordRequest(customerID, path, method string, duration float64) {
+	// Increment request counter
+	c.requestCounter.WithLabelValues(customerID, path, method, "200").Inc()
+
+	// Record request duration
+	c.requestDuration.WithLabelValues(customerID, path, method).Observe(duration)
+}
+
+func (c *MetricsCollector) RecordAgentConnection(customerID string) {
+	c.agentConnections.WithLabelValues(customerID).Inc()
+}
+
+func (c *MetricsCollector) RecordAgentDisconnection(customerID string) {
+	c.agentDisconnections.WithLabelValues(customerID).Inc()
+}
+
+func (c *MetricsCollector) RecordAgentRequest(customerID, agentID string, status int) {
+	c.agentRequestCounter.WithLabelValues(customerID, agentID, strconv.Itoa(status)).Inc()
+}
+
+func (c *MetricsCollector) RecordAgentError(customerID, agentID, errorType string) {
+	c.agentErrors.WithLabelValues(customerID, agentID, errorType).Inc()
+}
+
+func (c *MetricsCollector) RecordAgentLatency(customerID, agentID string, duration time.Duration) {
+	c.agentLatency.WithLabelValues(customerID, agentID).Observe(duration.Seconds())
+}
+
+func (c *MetricsCollector) UpdateAgentUptime(customerID, agentID string, uptime float64) {
+	c.agentUptime.WithLabelValues(customerID, agentID).Set(uptime)
+}
+
+func (c *MetricsCollector) UpdateAgentMemoryUsage(customerID, agentID string, bytes float64) {
+	c.agentMemoryUsage.WithLabelValues(customerID, agentID).Set(bytes)
+}
+
+func (c *MetricsCollector) UpdateAgentCPUUsage(customerID, agentID string, percentage float64) {
+	c.agentCPUUsage.WithLabelValues(customerID, agentID).Set(percentage)
+}
+
+func (c *MetricsCollector) RecordAgentHeartbeat(customerID, agentID string) {
+	c.agentConnections.WithLabelValues(customerID, agentID).Set(1)
+}
+
+func (c *MetricsCollector) UpdateAgentMetrics(customerID, agentID string, metrics *models.AgentMetrics) {
+	c.agentMemoryUsage.WithLabelValues(customerID, agentID).Set(metrics.MemoryUsage)
+	c.agentCPUUsage.WithLabelValues(customerID, agentID).Set(metrics.CPUUsage)
+	c.agentUptime.WithLabelValues(customerID, agentID).Set(metrics.Uptime)
+}
+
+
+
+=========================================
+File: ./pkg/metrics/prometheus.go
+=========================================
+package metrics
+
+import (
+	"net/http"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+type PrometheusMetrics struct {
+	registry *prometheus.Registry
+}
+
+func NewPrometheusMetrics() *PrometheusMetrics {
+	return &PrometheusMetrics{
+		registry: prometheus.NewRegistry(),
+	}
+}
+
+func (p *PrometheusMetrics) Handler() http.Handler {
+	return promhttp.HandlerFor(p.registry, promhttp.HandlerOpts{
+		EnableOpenMetrics: true,
+	})
+}
+
+
+
+=========================================
+File: ./pkg/proxy/handler.go
+=========================================
+package proxy
+
+import (
+	"net/http"
+	"net/http/httputil"
+	"proxy-service/internal/config"
+	"proxy-service/pkg/metrics"
+	"time"
+)
+
+type ProxyHandler struct {
+	config  *config.Config
+	metrics *metrics.MetricsCollector
+}
+
+func NewProxyHandler(config *config.Config, metrics *metrics.MetricsCollector) *ProxyHandler {
+	return &ProxyHandler{
+		config:  config,
+		metrics: metrics,
+	}
+}
+
+func (h *ProxyHandler) Handle(writer http.ResponseWriter, request *http.Request) {
+	start := time.Now()
+	customerID := request.Context().Value("customer_id").(string)
+
+	director := func(req *http.Request) {
+		req.URL.Scheme = "https"
+		req.URL.Host = h.config.Proxy.TargetHost
+		req.Host = h.config.Proxy.TargetHost
+	}
+
+	proxy := &httputil.ReverseProxy{
+		Director: director,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			h.metrics.RecordError(customerID, "proxy_error")
+			http.Error(w, err.Error(), http.StatusBadGateway)
+		},
+	}
+
+	proxy.ServeHTTP(writer, request)
+
+	duration := time.Since(start)
+	h.metrics.RecordRequestDuration(customerID, request.URL.Path, request.Method, duration)
+}
+
+
+
+=========================================
+File: ./pkg/proxy/router.go
+=========================================
+package proxy
+
+import (
+	"net/http"
+	"sync"
+)
+
+type Router struct {
+	routes    map[string]*Route
+	routeLock sync.RWMutex
+}
+
+type Route struct {
+	Path      string
+	Handler   http.Handler
+	RateLimit int
+	Methods   []string
+}
+
+func NewRouter() *Router {
+	return &Router{
+		routes: make(map[string]*Route),
+	}
+}
+
+func (r *Router) AddRoute(path string, route *Route) {
+	r.routeLock.Lock()
+	defer r.routeLock.Unlock()
+	r.routes[path] = route
+}
+
+func (r *Router) GetRoute(path string) (*Route, bool) {
+	r.routeLock.RLock()
+	defer r.routeLock.RUnlock()
+	route, exists := r.routes[path]
+	return route, exists
+}
+
+
+
+=========================================
+File: ./pkg/utils/route.go
+=========================================
+package utils
+
+import (
+	"path"
+	"strings"
+)
+
+// IsRouteAllowed checks if a given route path is allowed based on the list of allowed routes
+func IsRouteAllowed(routePath string, allowedRoutes []string) bool {
+	// Clean and standardize the route path
+	routePath = path.Clean("/" + routePath)
+
+	for _, allowedRoute := range allowedRoutes {
+		// Clean and standardize the allowed route pattern
+		allowedRoute = path.Clean("/" + allowedRoute)
+
+		// Check for exact match
+		if allowedRoute == routePath {
+			return true
+		}
+
+		// Check wildcard patterns
+		if strings.Contains(allowedRoute, "*") {
+			if matchWildcardPattern(allowedRoute, routePath) {
+				return true
+			}
+		}
+
+		// Check prefix patterns
+		if strings.HasSuffix(allowedRoute, "/**") {
+			prefix := strings.TrimSuffix(allowedRoute, "/**")
+			if strings.HasPrefix(routePath, prefix) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// matchWildcardPattern checks if a route matches a wildcard pattern
+func matchWildcardPattern(pattern, route string) bool {
+	patternParts := strings.Split(strings.Trim(pattern, "/"), "/")
+	routeParts := strings.Split(strings.Trim(route, "/"), "/")
+
+	if len(patternParts) != len(routeParts) {
+		return false
+	}
+
+	for i, part := range patternParts {
+		if part != "*" && part != routeParts[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
+
+
+=========================================
+File: ./pkg/validator/request_validator.go
+=========================================
+package validator
+
+import (
+	"fmt"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"proxy-service/internal/config"
+	"proxy-service/pkg/cache"
+	"proxy-service/pkg/logger"
+)
+
+// RateLimiter implements a simple token bucket algorithm
+type RateLimiter struct {
+	tokens     float64
+	capacity   float64
+	refillRate float64
+	lastRefill time.Time
+	mutex      sync.Mutex
+}
+
+func NewRateLimiter(capacity float64, refillRate float64) *RateLimiter {
+	return &RateLimiter{
+		tokens:     capacity,
+		capacity:   capacity,
+		refillRate: refillRate,
+		lastRefill: time.Now(),
+	}
+}
+
+func (rl *RateLimiter) Allow() bool {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+
+	now := time.Now()
+	elapsed := now.Sub(rl.lastRefill).Seconds()
+	rl.tokens += elapsed * rl.refillRate
+
+	if rl.tokens > rl.capacity {
+		rl.tokens = rl.capacity
+	}
+
+	if rl.tokens < 1 {
+		return false
+	}
+
+	rl.tokens--
+	rl.lastRefill = now
+	return true
+}
+
+type RequestValidator struct {
+	config       *config.AgentConfig
+	cache        *cache.RedisCache
+	logger       *logger.Logger
+	rateLimiters map[string]*RateLimiter
+	mutex        sync.RWMutex
+}
+
+func NewRequestValidator(config *config.AgentConfig, cache *cache.RedisCache, logger *logger.Logger) *RequestValidator {
+	return &RequestValidator{
+		config:       config,
+		cache:        cache,
+		logger:       logger,
+		rateLimiters: make(map[string]*RateLimiter),
+	}
+}
+
+func (rv *RequestValidator) ValidateRequest(req *http.Request) error {
+	// 1. IP Whitelist Check
+	if err := rv.validateIP(req); err != nil {
+		return fmt.Errorf("IP validation failed: %w", err)
+	}
+
+	// 2. Request Size Validation
+	if err := rv.validateRequestSize(req); err != nil {
+		return fmt.Errorf("size validation failed: %w", err)
+	}
+
+	// 3. Rate Limiting
+	if err := rv.validateRateLimit(req); err != nil {
+		return fmt.Errorf("rate limit exceeded: %w", err)
+	}
+
+	// 4. Additional Security Headers Check
+	if err := rv.validateSecurityHeaders(req); err != nil {
+		return fmt.Errorf("security headers validation failed: %w", err)
+	}
+
+	return nil
+}
+
+func (rv *RequestValidator) validateIP(req *http.Request) error {
+	// Get client IP
+	clientIP := getClientIP(req)
+
+	// If no whitelist is configured, allow all
+	if len(rv.config.Security.AllowedOrigins) == 0 {
+		return nil
+	}
+
+	// Check if IP is in whitelist
+	for _, allowed := range rv.config.Security.AllowedOrigins {
+		if allowed == "*" {
+			return nil
+		}
+
+		// Handle CIDR notation
+		if strings.Contains(allowed, "/") {
+			_, ipNet, err := net.ParseCIDR(allowed)
+			if err != nil {
+				continue
+			}
+			if ipNet.Contains(net.ParseIP(clientIP)) {
+				return nil
+			}
+		}
+
+		// Direct IP comparison
+		if allowed == clientIP {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("IP %s not in whitelist", clientIP)
+}
+
+func (rv *RequestValidator) validateRequestSize(req *http.Request) error {
+	// Check Content-Length header
+	if req.ContentLength > rv.config.MaxRequestSize {
+		return fmt.Errorf("request size %d exceeds maximum allowed size %d",
+			req.ContentLength, rv.config.MaxRequestSize)
+	}
+
+	return nil
+}
+
+func (rv *RequestValidator) validateRateLimit(req *http.Request) error {
+	// Get agent ID from header
+	agentID := req.Header.Get("X-Agent-ID")
+	if agentID == "" {
+		return fmt.Errorf("missing agent ID")
+	}
+
+	// Get or create rate limiter for this agent
+	rv.mutex.Lock()
+	limiter, exists := rv.rateLimiters[agentID]
+	if !exists {
+		limiter = NewRateLimiter(
+			float64(rv.config.Security.RateLimit.Requests),
+			float64(rv.config.Security.RateLimit.Requests)/
+				rv.config.Security.RateLimit.TimeWindow.Seconds(),
+		)
+		rv.rateLimiters[agentID] = limiter
+	}
+	rv.mutex.Unlock()
+
+	// Check rate limit
+	if !limiter.Allow() {
+		return fmt.Errorf("rate limit exceeded for agent %s", agentID)
+	}
+
+	return nil
+}
+
+func (rv *RequestValidator) validateSecurityHeaders(req *http.Request) error {
+	// Validate required headers
+	requiredHeaders := map[string]bool{
+		"X-Agent-ID":    true,
+		"X-Customer-ID": true,
+		"X-Agent-Token": true,
+		"Content-Type":  true,
+	}
+
+	for header := range requiredHeaders {
+		if req.Header.Get(header) == "" {
+			return fmt.Errorf("missing required header: %s", header)
+		}
+	}
+
+	// Validate Content-Type
+	contentType := req.Header.Get("Content-Type")
+	allowedContentTypes := map[string]bool{
+		"application/json":                  true,
+		"application/x-www-form-urlencoded": true,
+		"multipart/form-data":               true,
+	}
+
+	if !allowedContentTypes[contentType] {
+		return fmt.Errorf("unsupported Content-Type: %s", contentType)
+	}
+
+	return nil
+}
+
+// Helper function to get client IP from request
+func getClientIP(req *http.Request) string {
+	// Check X-Real-IP header
+	if ip := req.Header.Get("X-Real-IP"); ip != "" {
+		return ip
+	}
+
+	// Check X-Forwarded-For header
+	if forwardedFor := req.Header.Get("X-Forwarded-For"); forwardedFor != "" {
+		// Get the first IP in the list
+		if i := strings.Index(forwardedFor, ","); i != -1 {
+			return strings.TrimSpace(forwardedFor[:i])
+		}
+		return strings.TrimSpace(forwardedFor)
+	}
+
+	// Fall back to RemoteAddr
+	ip, _, _ := net.SplitHostPort(req.RemoteAddr)
+	return ip
+}
+
+
+
+=========================================
+File: ./project_dump.txt
+=========================================
+
+
+
+=========================================
+File: ./README.md
+=========================================
+
+
+
+=========================================
+File: ./scripts/monitoring-setup.sh
+=========================================
+#!/bin/bash
+
+# Exit on error
+set -e
+
+# Setup Prometheus
+setup_prometheus() {
+    echo "Setting up Prometheus..."
+    
+    # Create necessary directories
+    mkdir -p monitoring/prometheus
+    
+    # Download and extract Prometheus
+    wget https://github.com/prometheus/prometheus/releases/download/v2.45.0/prometheus-2.45.0.linux-amd64.tar.gz
+    tar xvfz prometheus-*.tar.gz
+    
+    # Copy configuration
+    cp deployment/monitoring/prometheus/prometheus.yml monitoring/prometheus/
+    
+    echo "Prometheus setup completed!"
+}
+
+# Setup Grafana
+setup_grafana() {
+    echo "Setting up Grafana..."
+    
+    # Create necessary directories
+    mkdir -p monitoring/grafana/dashboards
+    
+    # Copy dashboards
+    cp deployment/monitoring/grafana/dashboards/*.json monitoring/grafana/dashboards/
+    
+    # Set permissions
+    chmod -R 777 monitoring/grafana
+    
+    echo "Grafana setup completed!"
+}
+
+# Main monitoring setup
+main() {
+    echo "Starting monitoring setup..."
+    
+    # Check if running in Kubernetes
+    if [ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
+        echo "Running in Kubernetes environment"
+        kubectl apply -f deployment/monitoring/
+    else
+        echo "Running in standalone environment"
+        setup_prometheus
+        setup_grafana
+    fi
+    
+    echo "Monitoring setup completed successfully!"
+}
+
+main
+
+
+=========================================
+File: ./scripts/setup.sh
+=========================================
+#!/bin/bash
+
+# Exit on error
+set -e
+
+# Generate certificates
+generate_certificates() {
+    echo "Generating TLS certificates..."
+    mkdir -p cert
+    openssl req -x509 -newkey rsa:4096 \
+        -keyout cert/server.key \
+        -out cert/server.crt \
+        -days 365 -nodes \
+        -subj "/CN=proxy-service"
+}
+
+# Setup MongoDB
+setup_mongodb() {
+    echo "Setting up MongoDB..."
+    mongo proxy_service --eval '
+        db.createCollection("customers");
+        db.createCollection("proxy_configs");
+        db.createCollection("metrics");
+        
+        db.customers.createIndex({ "api_key": 1 }, { unique: true });
+        db.proxy_configs.createIndex({ "customer_id": 1 });
+        db.metrics.createIndex({ "timestamp": 1 }, { expireAfterSeconds: 604800 });
+    '
+}
+
+# Setup Redis
+setup_redis() {
+    echo "Setting up Redis..."
+    redis-cli FLUSHDB
+    redis-cli CONFIG SET maxmemory-policy allkeys-lru
+}
+
+# Main setup
+main() {
+    echo "Starting proxy service setup..."
+    
+    # Check dependencies
+    command -v openssl >/dev/null 2>&1 || { echo "openssl is required"; exit 1; }
+    command -v mongo >/dev/null 2>&1 || { echo "mongodb is required"; exit 1; }
+    command -v redis-cli >/dev/null 2>&1 || { echo "redis is required"; exit 1; }
+    
+    generate_certificates
+    setup_mongodb
+    setup_redis
+    
+    echo "Setup completed successfully!"
+}
+
+main
+
+
+=========================================
+File: ./test/integration/proxy_test.go
+=========================================
+package integration
+
+// import (
+// 	"context"
+// 	"net/http"
+// 	"proxy-service/internal/config"
+// 	"testing"
+
+// 	"github.com/stretchr/testify/assert"
+// )
+
+// func TestProxyIntegration(t *testing.T) {
+// 	ctx := context.Background()
+// 	cfg, err := config.Load("../../config/config.test.yaml")
+// 	assert.NoError(t, err)
+
+// 	// Setup test server
+// 	ts := setupTestServer()
+// 	defer ts.Close()
+
+// 	// Test cases
+// 	tests := []struct {
+// 		name           string
+// 		path           string
+// 		method         string
+// 		expectedStatus int
+// 	}{
+// 		{
+// 			name:           "Valid Request",
+// 			path:           "/api/test",
+// 			method:         "GET",
+// 			expectedStatus: http.StatusOK,
+// 		},
+// 		{
+// 			name:           "Invalid Path",
+// 			path:           "/invalid",
+// 			method:         "GET",
+// 			expectedStatus: http.StatusNotFound,
+// 		},
+// 	}
+
+// 	for _, tt := range tests {
+// 		t.Run(tt.name, func(t *testing.T) {
+// 			// Make request
+// 			resp, err := makeRequest(tt.method, ts.URL+tt.path)
+// 			assert.NoError(t, err)
+// 			assert.Equal(t, tt.expectedStatus, resp.StatusCode)
+// 		})
+// 	}
+// }
+
+
+
+=========================================
+File: ./test/integration/tunnel_test.go
+=========================================
+package integration
+
+// import (
+// 	"context"
+// 	"proxy-service/internal/config"
+// 	"testing"
+
+// 	"github.com/stretchr/testify/assert"
+// )
+
+// func TestTunnelIntegration(t *testing.T) {
+// 	ctx := context.Background()
+// 	cfg, err := config.Load("../../config/config.test.yaml")
+// 	assert.NoError(t, err)
+
+// 	// Test cases
+// 	tests := []struct {
+// 		name          string
+// 		customerID    string
+// 		expectedError bool
+// 	}{
+// 		{
+// 			name:          "Valid Customer",
+// 			customerID:    "test-customer",
+// 			expectedError: false,
+// 		},
+// 		{
+// 			name:          "Invalid Customer",
+// 			customerID:    "invalid",
+// 			expectedError: true,
+// 		},
+// 	}
+
+// 	for _, tt := range tests {
+// 		t.Run(tt.name, func(t *testing.T) {
+// 			// Test tunnel request
+// 			resp, err := makeProxyRequest(ctx, tt.customerID)
+// 			if tt.expectedError {
+// 				assert.Error(t, err)
+// 			} else {
+// 				assert.NoError(t, err)
+// 				assert.NotNil(t, resp)
+// 			}
+// 		})
+// 	}
+// }
+
+
+
+=========================================
+File: ./test/unit/auth_test.go
+=========================================
+package unit
+
+// import (
+// 	"context"
+// 	"testing"
+
+// 	"github.com/stretchr/testify/assert"
+// )
+
+// func TestAuthService(t *testing.T) {
+// 	// Setup
+// 	ctx := context.Background()
+// 	authService := setupAuthService()
+
+// 	// Test cases
+// 	tests := []struct {
+// 		name          string
+// 		apiKey        string
+// 		expectedError bool
+// 	}{
+// 		{
+// 			name:          "Valid API Key",
+// 			apiKey:        "valid-key",
+// 			expectedError: false,
+// 		},
+// 		{
+// 			name:          "Invalid API Key",
+// 			apiKey:        "invalid-key",
+// 			expectedError: true,
+// 		},
+// 	}
+
+// 	for _, tt := range tests {
+// 		t.Run(tt.name, func(t *testing.T) {
+// 			// Test token generation
+// 			token, err := authService.GenerateToken(ctx, tt.apiKey)
+// 			if tt.expectedError {
+// 				assert.Error(t, err)
+// 			} else {
+// 				assert.NoError(t, err)
+// 				assert.NotEmpty(t, token)
+// 			}
+// 		})
+// 	}
+// }
+
+
+
+=========================================
+File: ./test/unit/proxy_test.go
+=========================================
+package unit
+
+// import (
+// 	"context"
+// 	"testing"
+
+// 	"github.com/stretchr/testify/assert"
+// )
+
+// func TestProxyService(t *testing.T) {
+// 	// Setup
+// 	ctx := context.Background()
+// 	proxyService := setupProxyService()
+
+// 	// Test cases
+// 	tests := []struct {
+// 		name          string
+// 		customerID    string
+// 		path          string
+// 		expectedError bool
+// 	}{
+// 		{
+// 			name:          "Valid Request",
+// 			customerID:    "test-customer",
+// 			path:          "/api/test",
+// 			expectedError: false,
+// 		},
+// 		{
+// 			name:          "Invalid Customer",
+// 			customerID:    "invalid",
+// 			path:          "/api/test",
+// 			expectedError: true,
+// 		},
+// 	}
+
+// 	for _, tt := range tests {
+// 		t.Run(tt.name, func(t *testing.T) {
+// 			// Test proxy request
+// 			resp, err := proxyService.HandleRequest(ctx, tt.customerID, tt.path)
+// 			if tt.expectedError {
+// 				assert.Error(t, err)
+// 			} else {
+// 				assert.NoError(t, err)
+// 				assert.NotNil(t, resp)
+// 			}
+// 		})
+// 	}
+// }
+
+
+

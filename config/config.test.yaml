@@ -1,0 +1,34 @@
+# server:
+#   port: "8081"
+#   tls_cert_file: "cert/test.crt"
+#   tls_key_file: "cert/test.key"
+#   read_timeout: 30
+#   write_timeout: 30
+#   idle_timeout: 60
+
+# mongodb:
+#   uri: "mongodb://localhost:27017"
+#   database: "proxy_service_test"
+#   pool_size: 10
+#   timeout: 30
+
+# redis:
+#   address: "localhost:6379"
+#   password: ""
+#   db: 1
+#   pool_size: 10
+#   min_idle_conns: 5
+
+# jwt:
+#   secret: "test-secret-key"
+#   expiry_minutes: 60
+
+# metrics:
+#   enabled: false
+#   port: "9091"
+#   path: "/metrics"
+
+# log:
+#   level: "debug"
+#   format: "console"
+#   output: "stdout"

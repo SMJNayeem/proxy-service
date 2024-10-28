@@ -1,0 +1,42 @@
+{
+    "annotations": {
+        "list": []
+    },
+    "title": "Proxy Service Metrics",
+    "description": "Dashboard for monitoring proxy service performance",
+    "panels": [
+        {
+            "title": "Request Rate",
+            "type": "graph",
+            "datasource": "Prometheus",
+            "targets": [
+                {
+                    "expr": "rate(proxy_requests_total[5m])",
+                    "legendFormat": "{{customer_id}} - {{path}}"
+                }
+            ]
+        },
+        {
+            "title": "Response Latency",
+            "type": "graph",
+            "datasource": "Prometheus",
+            "targets": [
+                {
+                    "expr": "rate(proxy_request_duration_seconds_sum[5m]) / rate(proxy_request_duration_seconds_count[5m])",
+                    "legendFormat": "{{customer_id}} - {{path}}"
+                }
+            ]
+        },
+        {
+            "title": "Error Rate",
+            "type": "graph",
+            "datasource": "Prometheus",
+            "targets": [
+                {
+                    "expr": "rate(proxy_errors_total[5m])",
+                    "legendFormat": "{{customer_id}} - {{type}}"
+                }
+            ]
+        }
+    ]
+}

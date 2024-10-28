@@ -1,0 +1,42 @@
+server:
+  port: "8080"
+  tls_cert_file: "/app/cert/server.crt"
+  tls_key_file: "/app/cert/server.key"
+  read_timeout: 30
+  write_timeout: 30
+  idle_timeout: 60
+
+mongodb:
+  uri: "${MONGODB_URI}"
+  database: "proxy_service"
+  pool_size: 100
+  timeout: 30
+
+redis:
+  address: "${REDIS_ADDRESS}"
+  password: "${REDIS_PASSWORD}"
+  db: 0
+  pool_size: 100
+  min_idle_conns: 20
+  max_retries: 5
+
+jwt:
+  secret: "${JWT_SECRET}"
+  expiry_minutes: 60
+
+metrics:
+  enabled: true
+  port: "9090"
+  path: "/metrics"
+
+log:
+  level: "info"
+  format: "json"
+  output: "stdout"
+
+proxy:
+  target_host: "localhost:8080"
+
+cloudflare:
+  tunnel_id: "${CLOUDFLARE_TUNNEL_ID}"
+  tunnel_token: "${CLOUDFLARE_TUNNEL_TOKEN}"

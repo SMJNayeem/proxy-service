@@ -1,0 +1,19 @@
+FROM golang:1.21
+
+WORKDIR /app
+
+# Install development tools
+RUN go install github.com/cosmtrek/air@latest
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Expose ports
+EXPOSE 8080 9090
+
+# Use air for hot reload in development
+CMD ["air", "-c", ".air.toml"]

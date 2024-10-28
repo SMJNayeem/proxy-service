@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy-service
+  labels:
+    app: proxy-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: proxy-service
+  template:
+    metadata:
+      labels:
+        app: proxy-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      containers:
+        - name: proxy-service
+          image: proxy-service:latest
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 9090
+              name: metrics
+          env:
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: proxy-secrets
+                  key: mongodb-uri
+            - name: REDIS_ADDRESS
+              valueFrom:
+                secretKeyRef:
+                  name: proxy-secrets
+                  key: redis-address
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: proxy-secrets
+                  key: jwt-secret
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+            - name: certs
+              mountPath: /app/cert
+          resources:
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: proxy-service-config
+        - name: certs
+          secret:
+            secretName: proxy-service-certs

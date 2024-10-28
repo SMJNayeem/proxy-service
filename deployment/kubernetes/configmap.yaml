@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy-service-config
+data:
+  config.yaml: |
+    server:
+      port: "8080"
+      read_timeout: 30
+      write_timeout: 30
+      idle_timeout: 60
+
+    metrics:
+      enabled: true
+      port: "9090"
+      path: "/metrics"
+
+    log:
+      level: "info"
+      format: "json"

@@ -1,0 +1,38 @@
+Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+Test binary, built with go test -c
+*.test
+Output of the go coverage tool
+*.out
+Dependency directories
+vendor/
+IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+Environment files
+.env
+.env.local
+Certificates
+cert/
+*.pem
+*.key
+*.crt
+Build output
+proxy-service
+Log files
+*.log
+Docker volumes
+data/
+Temporary files
+tmp/
+Test files
+coverage.html
+macOS files
+.DS_Store

@@ -1,0 +1,60 @@
+server:
+  port: "8080"
+  tls_cert_file: "cert/server.crt"
+  tls_key_file: "cert/server.key"
+  read_timeout: 30
+  write_timeout: 30
+  idle_timeout: 60
+
+mongodb:
+  uri: "mongodb://localhost:27017"
+  database: "proxy_service"
+  pool_size: 50
+  timeout: 30
+
+redis:
+  address: "localhost:6379"
+  password: ""
+  db: 0
+  pool_size: 50
+  min_idle_conns: 10
+  max_retries: 3
+
+jwt:
+  secret: "development-secret-key"
+  expiry_minutes: 60
+
+metrics:
+  enabled: true
+  port: "9090"
+  path: "/metrics"
+
+log:
+  level: "debug"
+  format: "console"
+  output: "stdout"
+
+proxy:
+  target_host: "localhost:8080"
+
+cloudflare:
+  tunnel_id: "your-development-tunnel-id"
+  tunnel_token: "your-development-tunnel-token"
+  heartbeat_interval: "30s"
+  retry_interval: "5s"
+  max_retries: 3
+  connection_timeout: "30s"
+  handshake_timeout: "10s"
+
+agent:
+  max_connections: 1000
+  connection_timeout: "30s"
+  heartbeat_interval: "30s"
+  max_request_timeout: "60s"
+  max_retries: 3
+  retry_interval: "5s"
+  buffer_size: 4096
+  agent:
+  security: "your-security-token"
+  max_request_size: 1048576 # 1MB
+
